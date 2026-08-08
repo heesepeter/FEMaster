@@ -285,6 +285,44 @@ SystemDofIds Model::build_unconstrained_index_matrix() {
     return res;
 }
 
+Field Model::build_pretension_force_matrix() {
+    Field force_matrix{"PRETENSION_FORCE", FieldDomain::NODE,
+                       static_cast<Index>(this->_data->max_nodes), 3};
+    force_matrix.set_zero();
+
+    for (const auto& section : this->_data->pretension_sections) {
+        if (!section || section->state != pretension::State::Loading ||
+            section->control != pretension::Control::Force ||
+            section->interface_pairs.empty()) {
+            continue;
+        }
+
+        const Precision axis_norm = section->axis_direction.norm();
+        logging::error(axis_norm > Precision(0),
+                       "Pretension section '", section->name,
+                       "' has a zero axis direction");
+        const Vec3 axis = section->axis_direction / axis_norm;
+        const Precision weight =
+            Precision(1) / static_cast<Precision>(section->interface_pairs.size());
+        const Precision pair_force = section->prescribed_value * weight;
+
+        for (const auto& pair : section->interface_pairs) {
+            if (pair.side_a >= 0 && pair.side_a < static_cast<ID>(force_matrix.rows)) {
+                for (Dim component = 0; component < 3; ++component) {
+                    force_matrix(pair.side_a, component) -= pair_force * axis(component);
+                }
+            }
+            if (pair.side_b >= 0 && pair.side_b < static_cast<ID>(force_matrix.rows)) {
+                for (Dim component = 0; component < 3; ++component) {
+                    force_matrix(pair.side_b, component) += pair_force * axis(component);
+                }
+            }
+        }
+    }
+
+    return force_matrix;
+}
+
 Field Model::build_load_matrix(std::vector<std::string> load_sets, Precision time) {
     Field load_matrix{"LOAD_MATRIX", FieldDomain::NODE, static_cast<Index>(this->_data->max_nodes), 6};
     load_matrix.set_zero();
@@ -297,6 +335,13 @@ Field Model::build_load_matrix(std::vector<std::string> load_sets, Precision tim
     // apply constrained loads
     for (auto &c: this->_data->couplings) {
         c.apply_loads(*_data, load_matrix);
+    }
+
+    const Field pretension_force = build_pretension_force_matrix();
+    for (Index node = 0; node < load_matrix.rows; ++node) {
+        for (Dim component = 0; component < 3; ++component) {
+            load_matrix(node, component) += pretension_force(node, component);
+        }
     }
 
     return load_matrix;

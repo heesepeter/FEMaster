@@ -282,6 +282,8 @@ void LinearStatic::run() {
         }
     }
 
+    auto pretension_force = model->build_pretension_force_matrix();
+
     Timer::measure(
         [&]() {
             writer->add_loadcase(id, io::writer::WriterStepType::Static);
@@ -292,6 +294,7 @@ void LinearStatic::run() {
             writer->write_field(stress_bot      , "STRESS_BOT", model->_data.get());
             writer->write_field(shell_resultants, "SHELL_RESULTANTS", model->_data.get());
             writer->write_field(global_load_mat , "EXTERNAL_FORCES", model->_data.get());
+            writer->write_field(pretension_force, "PTFORC", model->_data.get());
             writer->write_field(reaction_masked , "REACTION_FORCES", model->_data.get());
             writer->write_field(section_forces  , "LOCAL_SECTION_FORCES", model->_data.get());
             if (shear_flow.rows > 0) {

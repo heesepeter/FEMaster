@@ -35,7 +35,12 @@ ID ModelData::append_node(const Vec3& position) {
         (*positions_reference)(row, component) = position(component);
     }
 
-    node_sets.add(node_id);
+    // Appended interface nodes belong to the global node set only. Do not use
+    // Sets::add() here because an input NSET may still be active while the
+    // topology is being split.
+    if (node_sets.has_all() && node_sets.all() != nullptr) {
+        node_sets.all()->add(node_id);
+    }
     return node_id;
 }
 

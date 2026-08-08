@@ -19,7 +19,13 @@ Equations get_pretension_equations(
     (void) model_data;
 
     Equations equations;
-    if (section.state != pretension::State::Locked) {
+    if (section.state == pretension::State::Open) {
+        return equations;
+    }
+
+    // Force control is represented by equal and opposite nodal loads on the
+    // two cut sides. It must not also create a prescribed-gap equation.
+    if (section.control == pretension::Control::Force) {
         return equations;
     }
 
@@ -67,7 +73,11 @@ Equations get_pretension_equations(
     }
 
     if (!entries.empty()) {
-        Equation equation(std::move(entries), section.locked_gap);
+        const Precision rhs = section.state == pretension::State::Loading
+            ? section.prescribed_value
+            : section.locked_gap;
+
+        Equation equation(std::move(entries), rhs);
         equation.source = EquationSourceKind::Manual;
         equations.push_back(std::move(equation));
     }

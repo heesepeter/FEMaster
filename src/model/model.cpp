@@ -251,6 +251,10 @@ void Model::set_pretension_load(
 void Model::lock_pretension_section(const std::string& name) {
     for (auto& section : _data->pretension_sections) {
         if (section && section->name == name) {
+            if (section->state == pretension::State::Loading &&
+                section->control == pretension::Control::Displacement) {
+                section->locked_gap = section->prescribed_value;
+            }
             section->state = pretension::State::Locked;
             return;
         }
