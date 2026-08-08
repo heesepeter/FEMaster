@@ -89,4 +89,48 @@ inline void register_pretension_section_count(
     });
 }
 
+inline void register_pretension(
+    fem::io::dsl::Registry& registry,
+    model::Model& model) {
+    registry.command("PRETENSION", [&](fem::io::dsl::Command& command) {
+        command.allow_if(fem::io::dsl::Condition::parent_is("ROOT"));
+        command.doc("Apply or lock a pretension section.");
+
+        command.keyword(
+            fem::io::dsl::KeywordSpec::make()
+                .key("SECTION")
+                    .required()
+                    .doc("Pretension section name")
+                .key("ACTION")
+                    .optional("LOCK")
+                    .allowed({"LOCK", "LOAD"})
+                .key("CONTROL")
+                    .optional("DISPLACEMENT")
+                    .allowed({"FORCE", "DISPLACEMENT"})
+                .key("VALUE")
+                    .optional("0")
+                    .doc("Force or relative displacement value"));
+
+        command.on_enter([&model](const fem::io::dsl::Keys& keys) {
+            const std::string section = keys.raw("SECTION");
+            const std::string action = keys.raw("ACTION");
+
+            if (action == "LOCK") {
+                model.lock_pretension_section(section);
+                return;
+            }
+
+            const std::string control = keys.raw("CONTROL");
+            const fem::Precision value = keys.get<fem::Precision>("VALUE");
+            const auto mode = control == "FORCE"
+                ? fem::pretension::Control::Force
+                : fem::pretension::Control::Displacement;
+
+            model.set_pretension_load(section, mode, value);
+        });
+
+        command.variant(fem::io::dsl::Variant::make());
+    });
+}
+
 } // namespace fem::io::reader::commands

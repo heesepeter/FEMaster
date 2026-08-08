@@ -241,11 +241,17 @@ Parser::CountData Parser::run_count_stage(const std::string& input_path) {
     register_count_commands(registry, count);
     register_set_commands(registry);
     register_analysis_commands(registry);
+    // Re-register the lightweight counter after the normal command set so
+    // PRETENSIONSECTION is counted without touching model topology.
+    commands::register_pretension_section_count(registry, [&count]() {
+        ++count.pretension_section_count;
+    });
 
     registry.set_active_mode(io::dsl::ActiveMode::ConsumeOnly);
     registry.set_active_mode("NODE", io::dsl::ActiveMode::Active);
     registry.set_active_mode("ELEMENT", io::dsl::ActiveMode::Active);
     registry.set_active_mode("SURFACE", io::dsl::ActiveMode::Active);
+    registry.set_active_mode("PRETENSIONSECTION", io::dsl::ActiveMode::Active);
 
     io::dsl::File file(input_path);
     io::dsl::Engine engine(registry);
@@ -464,6 +470,7 @@ void Parser::register_analysis_commands(io::dsl::Registry& reg) {
     commands::register_tie(reg, mdl);
     commands::register_contact(reg, mdl);
     commands::register_pretension_section(reg, mdl);
+    commands::register_pretension(reg, mdl);
 
     // Profiles & sections & elements
     commands::register_profile(reg, mdl);

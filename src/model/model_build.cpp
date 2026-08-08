@@ -21,6 +21,7 @@
 
 #include "../mattools/assemble.h"
 #include "../mattools/numerate_dofs.h"
+#include "../constraints/types/pretension.h"
 #include "element/element_structural.h"
 #include "model.h"
 #include "solid/element_solid.h"
@@ -412,6 +413,24 @@ constraint::ConstraintGroups Model::collect_constraints(SystemDofIds& system_dof
             groups.rbms.push_back(std::move(eq));
         }
         ++rbm_idx;
+    }
+
+    Index pretension_idx = 0;
+    for (auto& section : this->_data->pretension_sections) {
+        if (section == nullptr) {
+            continue;
+        }
+
+        auto eqs = constraint::get_pretension_equations(
+            system_dof_ids,
+            *_data,
+            *section);
+        for (auto& eq : eqs) {
+            eq.source = constraint::EquationSourceKind::Manual;
+            eq.source_index = pretension_idx;
+            groups.pretensions.push_back(std::move(eq));
+        }
+        ++pretension_idx;
     }
 
     if (!this->_data->equations.empty()) {

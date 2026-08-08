@@ -25,6 +25,11 @@ struct CutFacet {
     Precision area = 0;
 };
 
+struct InterfacePair {
+    ID side_a = -1;
+    ID side_b = -1;
+};
+
 struct PretensionSection {
     using Ptr = std::shared_ptr<PretensionSection>;
 
@@ -38,6 +43,7 @@ struct PretensionSection {
 
     std::vector<ID> side_a_nodes;
     std::vector<ID> side_b_nodes;
+    std::vector<InterfacePair> interface_pairs;
     std::vector<ID> cut_element_ids;
     std::vector<CutFacet> facets;
 
