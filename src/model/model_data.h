@@ -33,6 +33,7 @@
 #include "../data/sets.h"
 #include "../section/profile.h"
 #include "../section/section.h"
+#include "../section/pretension_section.h"
 #include "../feature/feature.h"
 
 #include <array>
@@ -61,8 +62,14 @@ struct ModelData {
     std::vector<SurfacePtr> surfaces;
     std::vector<LinePtr>    lines;
 
+    // Dynamic topology insertion -----------------------------------------------
+    ID append_node(const Vec3& position);
+    ID next_free_element_id() const;
+    void insert_element(ElementPtr element);
+
     // Sections and profiles ----------------------------------------------------
     std::vector<Section::Ptr> sections;
+    std::vector<pretension::PretensionSection::Ptr> pretension_sections;
     Dict<Profile> profiles;
 
     // Non-element features ----------------------------------------------------

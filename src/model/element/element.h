@@ -47,6 +47,11 @@ struct ElementInterface {
     virtual SurfacePtr surface(ID) { return nullptr; }
     virtual LinePtr    line   (ID) { return nullptr; }
 
+    virtual bool replace_node(ID, ID) {
+        logging::error(false, "ElementInterface: replace_node not implemented for element ", elem_id);
+        return false;
+    }
+
     /// Short type tag (e.g., "C3D8", "S4", "B33"). Override in derived types.
     virtual std::string type_name() const { return std::string{}; }
 

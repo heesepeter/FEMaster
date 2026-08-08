@@ -70,6 +70,7 @@
 #include "commands/register_coupling.inl"
 #include "commands/register_tie.inl"
 #include "commands/register_contact.inl"
+#include "commands/register_pretension.inl"
 #include "commands/register_profile.inl"
 #include "commands/register_solid_section.inl"
 #include "commands/register_beam_section.inl"
@@ -143,6 +144,7 @@ void Parser::run(const std::string&                   input_path,
 
     // Build topology and all enumeration data required to size generic fields.
     run_topology_stage(input_path);
+    m_model->prepare_pretension_sections();
     m_model->assign_sections();
     m_model->_data->initialize_element_enumeration();
 
@@ -269,6 +271,7 @@ void Parser::run_topology_stage(const std::string& input_path) {
     registry.set_active_mode("DENSITY", io::dsl::ActiveMode::Active);
     registry.set_active_mode("ORIENTATION", io::dsl::ActiveMode::Active);
     registry.set_active_mode("SHELLSECTION", io::dsl::ActiveMode::Active);
+    registry.set_active_mode("PRETENSIONSECTION", io::dsl::ActiveMode::Active);
 
     io::dsl::File file(input_path);
     io::dsl::Engine engine(registry);
@@ -304,9 +307,20 @@ void Parser::run_field_stage(const std::string& input_path) {
 // ----------------- Model & registration -----------------
 
 void Parser::allocate_model(const CountData& count) {
-    const int n_nodes    = count.highest_node_id    + 1;
-    const int n_elems    = count.highest_element_id + 1;
+    const int base_nodes = count.highest_node_id    + 1;
+    const int base_elems = count.highest_element_id + 1;
     const int n_surfaces = count.highest_surface_id + 1;
+
+    // Temporary capacity reservation for the first C3D8 pretension split:
+    // one cut element can create up to eight new interface nodes and one
+    // additional element. The exact requirement will become geometric once
+    // general element subdivision is implemented.
+    const int elements_per_section = std::max(1, base_elems);
+    const int extra_nodes = 8 * elements_per_section * count.pretension_section_count;
+    const int extra_elems = elements_per_section * count.pretension_section_count;
+
+    const int n_nodes = base_nodes + extra_nodes;
+    const int n_elems = base_elems + extra_elems;
 
     m_model = std::make_shared<model::Model>(n_nodes, n_elems, n_surfaces);
 
@@ -347,6 +361,7 @@ void Parser::run_data_stage(const std::string&                   input_path,
     registry.set_active_mode("DENSITY", io::dsl::ActiveMode::ConsumeOnly);
     registry.set_active_mode("ORIENTATION", io::dsl::ActiveMode::ConsumeOnly);
     registry.set_active_mode("SHELLSECTION", io::dsl::ActiveMode::ConsumeOnly);
+    registry.set_active_mode("PRETENSIONSECTION", io::dsl::ActiveMode::ConsumeOnly);
 
     // These commands were executed in run_field_stage() and must not recreate
     // or reselect fields while the remaining data commands are processed.
@@ -376,6 +391,9 @@ void Parser::register_count_commands(io::dsl::Registry& reg, CountData& count) {
     });
     commands::register_surface_count(reg, [&count](ID id) {
         count.highest_surface_id = std::max(count.highest_surface_id, static_cast<int>(id));
+    });
+    commands::register_pretension_section_count(reg, [&count]() {
+        ++count.pretension_section_count;
     });
 }
 
@@ -445,6 +463,7 @@ void Parser::register_analysis_commands(io::dsl::Registry& reg) {
     commands::register_coupling(reg, mdl);
     commands::register_tie(reg, mdl);
     commands::register_contact(reg, mdl);
+    commands::register_pretension_section(reg, mdl);
 
     // Profiles & sections & elements
     commands::register_profile(reg, mdl);

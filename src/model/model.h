@@ -59,6 +59,24 @@ struct Model {
                        Precision penalty,
                        Precision clearance,
                        bool flip_normal);
+
+    // add pretension sections
+    void add_pretension_section(
+      const std::string& name,
+      const std::string& surface_set,
+      Vec3 axis,
+      const std::string& position);
+
+    void prepare_pretension_sections();
+
+    void set_pretension_load(
+      const std::string& name,
+      pretension::Control control,
+      Precision value);
+
+    void lock_pretension_section(
+      const std::string& name);
+
     // rbm constraints: remove rigid-body motion on an element set
     void add_rbm      (const std::string& set);
 

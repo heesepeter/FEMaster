@@ -115,6 +115,7 @@ private:
         int highest_node_id    = -1;
         int highest_element_id = -1;
         int highest_surface_id = -1;
+        int pretension_section_count = 0;
     };
 
     // Ordered parser stages

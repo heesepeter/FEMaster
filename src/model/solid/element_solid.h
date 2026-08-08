@@ -37,6 +37,17 @@ public:
     const ID* nodes() const override;
     bool      is_solid () const override {return true;}
 
+    bool replace_node(ID old_node, ID new_node) override {
+        bool replaced = false;
+        for (ID& node_id : node_ids) {
+            if (node_id == old_node) {
+                node_id = new_node;
+                replaced = true;
+            }
+        }
+        return replaced;
+    }
+
     SurfacePtr surface(ID surface_id) override = 0;
 
     virtual StaticMatrix<N, D> node_coords_local    () = 0;

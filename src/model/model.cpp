@@ -1,5 +1,7 @@
 #include "model.h"
 
+#include "cut/cut_builder.h"
+
 #include "../section/section.h"
 #include "../section/section_beam.h"
 #include "../section/section_solid.h"
@@ -10,6 +12,8 @@
 
 #include "../bc/load_collector.h"
 #include "../bc/support_collector.h"
+
+#include <algorithm>
 
 namespace fem {
 namespace model {
@@ -179,6 +183,81 @@ void Model::add_contact(const std::string& master_set,
                                      clearance,
                                      flip_normal);
     }
+}
+
+void Model::add_pretension_section(
+    const std::string& name,
+    const std::string& surface_set,
+    Vec3 axis,
+    const std::string& position) {
+    logging::error(!name.empty(),
+                   "PRETENSION SECTION: name must not be empty");
+    const bool duplicate_name = std::any_of(
+        _data->pretension_sections.begin(),
+        _data->pretension_sections.end(),
+        [&](const pretension::PretensionSection::Ptr& existing) {
+            return existing && existing->name == name;
+        });
+    logging::error(!duplicate_name,
+                   "PRETENSION SECTION: duplicate section name ", name);
+    logging::error(_data->surface_sets.has(surface_set),
+                   "PRETENSION SECTION: surface set ", surface_set,
+                   " does not exist");
+    logging::error(axis.norm() > Precision(0),
+                   "PRETENSION SECTION: axis must not be zero");
+    logging::error(position == "MIDDLE",
+                   "PRETENSION SECTION: only POSITION=MIDDLE is supported yet");
+
+    auto section = std::make_shared<pretension::PretensionSection>();
+    section->name = name;
+    section->cylinder_surface_set = surface_set;
+    section->axis_direction = axis.normalized();
+    section->cut_coordinate = Precision(0);
+
+    _data->pretension_sections.push_back(std::move(section));
+}
+
+void Model::prepare_pretension_sections() {
+    for (auto& section : _data->pretension_sections) {
+        logging::error(section != nullptr,
+                       "PRETENSION SECTION: null section encountered");
+
+        if (section->prepared) {
+            continue;
+        }
+
+        CutBuilder::split(*_data, *section);
+        section->prepared = true;
+    }
+}
+
+void Model::set_pretension_load(
+    const std::string& name,
+    pretension::Control control,
+    Precision value) {
+    for (auto& section : _data->pretension_sections) {
+        if (section && section->name == name) {
+            section->control = control;
+            section->prescribed_value = value;
+            section->state = pretension::State::Loading;
+            return;
+        }
+    }
+
+    logging::error(false,
+                   "PRETENSION: section ", name, " does not exist");
+}
+
+void Model::lock_pretension_section(const std::string& name) {
+    for (auto& section : _data->pretension_sections) {
+        if (section && section->name == name) {
+            section->state = pretension::State::Locked;
+            return;
+        }
+    }
+
+    logging::error(false,
+                   "PRETENSION LOCK: section ", name, " does not exist");
 }
 
 void Model::add_rbm(const std::string& set) {

@@ -14,6 +14,63 @@
 namespace fem {
 namespace model {
 
+ID ModelData::append_node(const Vec3& position) {
+    logging::error(positions != nullptr,
+                   "ModelData: cannot append a node before POSITION has been initialized");
+    logging::error(positions_reference != nullptr,
+                   "ModelData: cannot append a node before POSITION_REFERENCE has been initialized");
+    logging::error(node_sets.has_all() && node_sets.all() != nullptr,
+                   "ModelData: global node set is not initialized");
+
+    const auto all_nodes = node_sets.all();
+    const ID node_id = all_nodes->size() == 0 ? ID(0) : all_nodes->last() + ID(1);
+
+    logging::error(node_id >= ID(0) && node_id < max_nodes,
+                   "ModelData: node capacity exhausted while appending node ", node_id,
+                   " (capacity: ", max_nodes, ")");
+
+    const Index row = static_cast<Index>(node_id);
+    for (Index component = 0; component < 3; ++component) {
+        (*positions)(row, component) = position(component);
+        (*positions_reference)(row, component) = position(component);
+    }
+
+    node_sets.add(node_id);
+    return node_id;
+}
+
+ID ModelData::next_free_element_id() const {
+    for (ID element_id = 0; element_id < max_elems; ++element_id) {
+        if (elements[static_cast<std::size_t>(element_id)] == nullptr) {
+            return element_id;
+        }
+    }
+
+    logging::error(false,
+                   "ModelData: element capacity exhausted while inserting a new element");
+    return ID(-1);
+}
+
+void ModelData::insert_element(ElementPtr element) {
+    logging::error(element != nullptr,
+                   "ModelData: cannot insert a null element");
+
+    const ID element_id = element->elem_id;
+    logging::error(element_id >= 0 && element_id < max_elems,
+                   "ModelData: element id ", element_id,
+                   " is outside the allocated element capacity ", max_elems);
+    logging::error(elements[static_cast<std::size_t>(element_id)] == nullptr,
+                   "ModelData: element slot ", element_id,
+                   " is already occupied");
+
+    element->_model_data = this;
+    elements[static_cast<std::size_t>(element_id)] = std::move(element);
+
+    if (elem_sets.has_all() && elem_sets.all() != nullptr) {
+        elem_sets.all()->add(element_id);
+    }
+}
+
 Index ModelData::field_rows(FieldDomain domain) {
     switch (domain) {
         case FieldDomain::UNKNOWN:
@@ -217,5 +274,6 @@ Field ModelData::element_nodal_to_nodal(const Field& element_nodal,
 
     return nodal;
 }
+
 } // namespace model
 } // namespace fem
