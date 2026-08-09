@@ -212,6 +212,39 @@ void Model::add_pretension_section(
     section->name = name;
     section->cylinder_surface_set = surface_set;
     section->axis_direction = axis.normalized();
+    Vec3 surface_center = Vec3::Zero();
+    Index surface_node_count = 0;
+    std::vector<bool> used_nodes(static_cast<std::size_t>(_data->max_nodes), false);
+
+    const auto surface_region = _data->surface_sets.get(surface_set);
+    for (const ID surface_id : *surface_region) {
+        if (surface_id < 0 || surface_id >= static_cast<ID>(_data->surfaces.size())) {
+            continue;
+        }
+        const auto& surface = _data->surfaces[static_cast<std::size_t>(surface_id)];
+        if (!surface) {
+            continue;
+        }
+        for (Index i = 0; i < surface->n_nodes; ++i) {
+            const ID node_id = surface->nodes()[i];
+            if (node_id < 0 || node_id >= static_cast<ID>(_data->max_nodes) ||
+                used_nodes[static_cast<std::size_t>(node_id)]) {
+                continue;
+            }
+            used_nodes[static_cast<std::size_t>(node_id)] = true;
+            const Index node = static_cast<Index>(node_id);
+            surface_center(0) += (*_data->positions)(node, 0);
+            surface_center(1) += (*_data->positions)(node, 1);
+            surface_center(2) += (*_data->positions)(node, 2);
+            ++surface_node_count;
+        }
+    }
+
+    logging::error(surface_node_count > 0,
+                   "PRETENSION SECTION: surface set ", surface_set,
+                   " has no valid surface nodes");
+    section->axis_origin = surface_center /
+        static_cast<Precision>(surface_node_count);
     section->cut_coordinate = Precision(0);
 
     _data->pretension_sections.push_back(std::move(section));

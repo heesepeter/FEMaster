@@ -7,6 +7,7 @@
 
 #include "../../core/logging.h"
 
+#include <array>
 #include <cmath>
 #include <utility>
 
@@ -39,47 +40,52 @@ Equations get_pretension_equations(
                    "' has a zero axis direction");
 
     const Vec3 axis = section.axis_direction / axis_norm;
-    const Precision weight =
-        Precision(1) / static_cast<Precision>(section.interface_pairs.size());
     constexpr Precision coefficient_tolerance = Precision(1e-12);
 
-    std::vector<EquationEntry> entries;
-    entries.reserve(section.interface_pairs.size() * 6);
+    Vec3 reference = std::abs(axis(0)) < Precision(0.9)
+        ? Vec3::UnitX() : Vec3::UnitY();
+    Vec3 tangent_1 = axis.cross(reference).normalized();
+    Vec3 tangent_2 = axis.cross(tangent_1).normalized();
+    const std::array<Vec3, 3> bases = {tangent_1, tangent_2, axis};
+    const Precision normal_gap = section.state == pretension::State::Loading
+        ? section.prescribed_value
+        : section.locked_gap;
+    const std::array<Precision, 3> rhs_values = {Precision(0), Precision(0), normal_gap};
 
-    for (const auto& pair : section.interface_pairs) {
-        for (Dim component = 0; component < 3; ++component) {
-            const Precision coefficient = weight * axis(component);
-            if (std::abs(coefficient) <= coefficient_tolerance) {
-                continue;
+    for (Index basis_index = 0; basis_index < bases.size(); ++basis_index) {
+        const Vec3& basis = bases[basis_index];
+
+        for (const auto& pair : section.interface_pairs) {
+            std::vector<EquationEntry> entries;
+            entries.reserve(6);
+            for (Dim component = 0; component < 3; ++component) {
+                const Precision coefficient = basis(component);
+                if (std::abs(coefficient) <= coefficient_tolerance) {
+                    continue;
+                }
+
+                const bool side_a_active =
+                    pair.side_a >= 0 &&
+                    pair.side_a < system_dof_ids.rows() &&
+                    system_dof_ids(pair.side_a, component) >= 0;
+                const bool side_b_active =
+                    pair.side_b >= 0 &&
+                    pair.side_b < system_dof_ids.rows() &&
+                    system_dof_ids(pair.side_b, component) >= 0;
+
+                if (side_a_active) {
+                    entries.push_back({pair.side_a, component, -coefficient});
+                }
+                if (side_b_active) {
+                    entries.push_back({pair.side_b, component, coefficient});
+                }
             }
-
-            const Dim dof = component;
-            const bool side_a_active =
-                pair.side_a >= 0 &&
-                pair.side_a < system_dof_ids.rows() &&
-                system_dof_ids(pair.side_a, dof) >= 0;
-            const bool side_b_active =
-                pair.side_b >= 0 &&
-                pair.side_b < system_dof_ids.rows() &&
-                system_dof_ids(pair.side_b, dof) >= 0;
-
-            if (side_a_active) {
-                entries.push_back({pair.side_a, dof, -coefficient});
-            }
-            if (side_b_active) {
-                entries.push_back({pair.side_b, dof, coefficient});
+            if (!entries.empty()) {
+                Equation equation(std::move(entries), rhs_values[basis_index]);
+                equation.source = EquationSourceKind::Manual;
+                equations.push_back(std::move(equation));
             }
         }
-    }
-
-    if (!entries.empty()) {
-        const Precision rhs = section.state == pretension::State::Loading
-            ? section.prescribed_value
-            : section.locked_gap;
-
-        Equation equation(std::move(entries), rhs);
-        equation.source = EquationSourceKind::Manual;
-        equations.push_back(std::move(equation));
     }
 
     return equations;
