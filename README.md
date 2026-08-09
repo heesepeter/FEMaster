@@ -1,5 +1,12 @@
 # FEMaster
 
+This repository is a fork of [FEMaster](https://github.com/Luecx/FEMaster).
+
+It contains additional changes and examples for the purpose of test implementations, developed by [@heesepeter](https://github.com/heesepeter).
+For the original project, documentation, and upstream changes, see the original repository.
+
+--------------------------------------------------------------------------------------------
+
 FEMaster is a C++17 finite-element solver for structural mechanics. One CMake
 build now covers Linux/WSL, Windows, and macOS. Intel oneMKL is supported on
 Linux and Windows; CUDA and optional cuDSS are supported on Linux and Windows.
