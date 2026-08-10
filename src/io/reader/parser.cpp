@@ -317,13 +317,12 @@ void Parser::allocate_model(const CountData& count) {
     const int base_elems = count.highest_element_id + 1;
     const int n_surfaces = count.highest_surface_id + 1;
 
-    // Temporary capacity reservation for the first C3D8 pretension split:
-    // one cut element can create up to eight new interface nodes and one
-    // additional element. The exact requirement will become geometric once
-    // general element subdivision is implemented.
+    // Reserve enough topology capacity for the current pretension splits.
+    // A two-and-two C3D4 cut creates six tetrahedra from one original,
+    // requiring five additional element slots.
     const int elements_per_section = std::max(1, base_elems);
-    const int extra_nodes = 8 * elements_per_section * count.pretension_section_count;
-    const int extra_elems = elements_per_section * count.pretension_section_count;
+    const int extra_nodes = 32 * elements_per_section * count.pretension_section_count;
+    const int extra_elems = 5 * elements_per_section * count.pretension_section_count;
 
     const int n_nodes = base_nodes + extra_nodes;
     const int n_elems = base_elems + extra_elems;

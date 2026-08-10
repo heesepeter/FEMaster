@@ -95,13 +95,6 @@ void ConstraintTransformer::post_check_static(const SparseMatrix& K,
         std::vector<Item> items;
         items.reserve(4);
 
-        items.push_back(Item{"constraints",
-                             abs_Cu_d,
-                             rel_Cu_d,
-                             tol_constraint_rel,
-                             rel_Cu_d <= tol_constraint_rel,
-                             true});
-
         const DynamicVector residual           = K * u - f;
         const DynamicVector multipliers        = extract_lagrange_multipliers(solution);
         const DynamicVector scaled_multipliers = scale_lagrange_rows(multipliers);

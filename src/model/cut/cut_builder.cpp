@@ -7,11 +7,13 @@
 #include "../element/element.h"
 #include "../solid/c3d4.h"
 #include "../solid/c3d8.h"
+#include "../solid/c3d10.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -209,6 +211,56 @@ std::array<ID, 4> oriented_c3d4_nodes(
     return nodes;
 }
 
+std::array<ID, 10> make_c3d10_from_tet(
+    ModelData& model_data,
+    const std::array<ID, 4>& vertices,
+    const std::array<ID, 4>& original_vertices,
+    const std::array<ID, 6>& original_mids,
+    std::map<std::pair<ID, ID>, ID>& midpoint_cache) {
+    std::array<ID, 10> nodes{};
+    std::copy(vertices.begin(), vertices.end(), nodes.begin());
+    constexpr std::array<std::pair<Index, Index>, 6> edges = {{
+        {0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 3}, {2, 3}
+    }};
+
+    constexpr std::array<std::pair<Index, Index>, 6> original_edges = {{
+        {0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 3}, {2, 3}
+    }};
+
+    for (Index edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const ID node_a = vertices[edges[edge_index].first];
+        const ID node_b = vertices[edges[edge_index].second];
+        const auto key = std::minmax(node_a, node_b);
+        ID midpoint = -1;
+
+        for (Index original_edge = 0; original_edge < original_edges.size(); ++original_edge) {
+            const auto original_key = std::minmax(
+                original_vertices[original_edges[original_edge].first],
+                original_vertices[original_edges[original_edge].second]);
+            if (key == original_key) {
+                midpoint = original_mids[original_edge];
+                break;
+            }
+        }
+
+        if (midpoint < 0) {
+            const auto cached = midpoint_cache.find(key);
+            if (cached != midpoint_cache.end()) {
+                midpoint = cached->second;
+            } else {
+                const Vec3 position_a = model_data.positions->row_vec3(
+                    static_cast<Index>(node_a));
+                const Vec3 position_b = model_data.positions->row_vec3(
+                    static_cast<Index>(node_b));
+                midpoint = model_data.append_node((position_a + position_b) * Precision(0.5));
+                midpoint_cache.emplace(key, midpoint);
+            }
+        }
+        nodes[4 + edge_index] = midpoint;
+    }
+    return nodes;
+}
+
 void split_c3d4_three_edge_cut(
     ModelData& model_data,
     pretension::PretensionSection& section,
@@ -300,6 +352,312 @@ void split_c3d4_three_edge_cut(
                                 side_b_interface.begin(), side_b_interface.end());
 }
 
+void split_c3d4_four_edge_cut(
+    ModelData& model_data,
+    pretension::PretensionSection& section,
+    C3D4& element,
+    const Vec3& plane_point,
+    const Vec3& axis) {
+    const ID element_id = element.elem_id;
+    const auto old_nodes = element.node_ids;
+    std::array<Precision, 4> distances{};
+    std::array<Index, 2> positive{};
+    std::array<Index, 2> negative{};
+    Index positive_count = 0;
+    Index negative_count = 0;
+
+    for (Index i = 0; i < 4; ++i) {
+        const Vec3 position = model_data.positions->row_vec3(
+            static_cast<Index>(old_nodes[i]));
+        distances[i] = axis.dot(position - plane_point);
+        if (distances[i] > 0) {
+            positive[positive_count++] = i;
+        } else if (distances[i] < 0) {
+            negative[negative_count++] = i;
+        }
+    }
+
+    logging::error(positive_count == 2 && negative_count == 2,
+                   "CutBuilder: C3D4 four-edge cut requires two nodes on each side");
+
+    std::array<std::array<ID, 2>, 2> side_a_interface{};
+    std::array<std::array<ID, 2>, 2> side_b_interface{};
+
+    for (Index n = 0; n < 2; ++n) {
+        for (Index p = 0; p < 2; ++p) {
+            const ID negative_node = old_nodes[negative[n]];
+            const ID positive_node = old_nodes[positive[p]];
+            const Vec3 negative_position = model_data.positions->row_vec3(
+                static_cast<Index>(negative_node));
+            const Vec3 positive_position = model_data.positions->row_vec3(
+                static_cast<Index>(positive_node));
+            const Precision parameter = distances[negative[n]] /
+                (distances[negative[n]] - distances[positive[p]]);
+            const Vec3 intersection = negative_position +
+                parameter * (positive_position - negative_position);
+
+            side_a_interface[n][p] = model_data.append_node(intersection);
+            side_b_interface[n][p] = model_data.append_node(intersection);
+            section.interface_pairs.push_back({
+                side_a_interface[n][p], side_b_interface[n][p]});
+        }
+    }
+
+    std::array<std::array<ID, 4>, 3> side_a_tets = {{
+        {old_nodes[negative[0]], old_nodes[negative[1]], side_a_interface[0][0], side_a_interface[0][1]},
+        {old_nodes[negative[1]], side_a_interface[0][0], side_a_interface[0][1], side_a_interface[1][1]},
+        {old_nodes[negative[1]], side_a_interface[0][0], side_a_interface[1][1], side_a_interface[1][0]}
+    }};
+    std::array<std::array<ID, 4>, 3> side_b_tets = {{
+        {old_nodes[positive[0]], old_nodes[positive[1]], side_b_interface[0][0], side_b_interface[1][0]},
+        {old_nodes[positive[1]], side_b_interface[0][0], side_b_interface[1][0], side_b_interface[1][1]},
+        {old_nodes[positive[1]], side_b_interface[0][0], side_b_interface[1][1], side_b_interface[0][1]}
+    }};
+
+    for (auto& tet : side_a_tets) {
+        tet = oriented_c3d4_nodes(model_data, tet);
+    }
+    for (auto& tet : side_b_tets) {
+        tet = oriented_c3d4_nodes(model_data, tet);
+    }
+
+    auto side_a_element = std::make_shared<C3D4>(element_id, side_a_tets[0]);
+    side_a_element->_model_data = &model_data;
+    model_data.elements[static_cast<std::size_t>(element_id)] = side_a_element;
+
+    for (Index i = 1; i < side_a_tets.size(); ++i) {
+        const ID new_id = model_data.next_free_element_id();
+        add_element_to_matching_sets(model_data, element_id, new_id);
+        model_data.insert_element(std::make_shared<C3D4>(new_id, side_a_tets[i]));
+    }
+    for (const auto& tet : side_b_tets) {
+        const ID new_id = model_data.next_free_element_id();
+        add_element_to_matching_sets(model_data, element_id, new_id);
+        model_data.insert_element(std::make_shared<C3D4>(new_id, tet));
+    }
+
+    for (const auto& pair : side_a_interface) {
+        section.side_a_nodes.push_back(pair[0]);
+        section.side_a_nodes.push_back(pair[1]);
+    }
+    for (const auto& pair : side_b_interface) {
+        section.side_b_nodes.push_back(pair[0]);
+        section.side_b_nodes.push_back(pair[1]);
+    }
+}
+
+void split_c3d10_three_edge_cut(
+    ModelData& model_data,
+    pretension::PretensionSection& section,
+    C3D10& element,
+    const Vec3& plane_point,
+    const Vec3& axis) {
+    const ID element_id = element.elem_id;
+    const auto old_nodes = element.node_ids;
+    const std::array<ID, 4> original_vertices = {
+        old_nodes[0], old_nodes[1], old_nodes[2], old_nodes[3]};
+    const std::array<ID, 6> original_mids = {
+        old_nodes[4], old_nodes[5], old_nodes[6],
+        old_nodes[7], old_nodes[8], old_nodes[9]};
+    std::array<Precision, 4> distances{};
+    std::array<Index, 4> positive{};
+    std::array<Index, 4> negative{};
+    Index positive_count = 0;
+    Index negative_count = 0;
+
+    for (Index i = 0; i < 4; ++i) {
+        const Vec3 position = model_data.positions->row_vec3(
+            static_cast<Index>(original_vertices[i]));
+        distances[i] = axis.dot(position - plane_point);
+        if (distances[i] > 0) {
+            positive[positive_count++] = i;
+        } else if (distances[i] < 0) {
+            negative[negative_count++] = i;
+        }
+    }
+
+    logging::error(positive_count == 1 && negative_count == 3,
+                   "CutBuilder: C3D10 currently supports one positive and three negative vertices");
+
+    for (Index edge = 0; edge < original_mids.size(); ++edge) {
+        const std::array<std::pair<Index, Index>, 6> edge_map = {{
+            {0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 3}, {2, 3}
+        }};
+        const auto [a, b] = edge_map[edge];
+        const Vec3 pa = model_data.positions->row_vec3(static_cast<Index>(original_vertices[a]));
+        const Vec3 pb = model_data.positions->row_vec3(static_cast<Index>(original_vertices[b]));
+        const Vec3 pm = model_data.positions->row_vec3(static_cast<Index>(original_mids[edge]));
+        logging::error(pm.isApprox((pa + pb) * Precision(0.5), Precision(1e-10)),
+                       "CutBuilder: curved C3D10 edges are not supported yet");
+    }
+
+    const Index single = positive[0];
+    const auto& three = negative;
+    std::array<ID, 3> side_a_interface{};
+    std::array<ID, 3> side_b_interface{};
+    for (Index i = 0; i < 3; ++i) {
+        const ID single_node = original_vertices[single];
+        const ID three_node = original_vertices[three[i]];
+        const Vec3 single_position = model_data.positions->row_vec3(static_cast<Index>(single_node));
+        const Vec3 three_position = model_data.positions->row_vec3(static_cast<Index>(three_node));
+        const Precision parameter = distances[single] /
+            (distances[single] - distances[three[i]]);
+        const Vec3 intersection = single_position +
+            parameter * (three_position - single_position);
+        side_a_interface[i] = model_data.append_node(intersection);
+        side_b_interface[i] = model_data.append_node(intersection);
+        section.interface_pairs.push_back({side_a_interface[i], side_b_interface[i]});
+    }
+
+    const std::array<std::array<ID, 4>, 3> side_a_vertices = {{
+        {original_vertices[three[0]], original_vertices[three[1]], original_vertices[three[2]], side_a_interface[0]},
+        {original_vertices[three[1]], original_vertices[three[2]], side_a_interface[0], side_a_interface[1]},
+        {original_vertices[three[2]], side_a_interface[0], side_a_interface[1], side_a_interface[2]}
+    }};
+    const std::array<ID, 4> side_b_vertices = {
+        original_vertices[single], side_b_interface[0],
+        side_b_interface[1], side_b_interface[2]};
+    std::map<std::pair<ID, ID>, ID> side_a_midpoints;
+    std::map<std::pair<ID, ID>, ID> side_b_midpoints;
+    std::array<std::array<ID, 10>, 3> side_a_nodes{};
+    for (Index i = 0; i < side_a_vertices.size(); ++i) {
+        const auto vertices = oriented_c3d4_nodes(model_data, side_a_vertices[i]);
+        side_a_nodes[i] = make_c3d10_from_tet(
+            model_data, vertices, original_vertices, original_mids, side_a_midpoints);
+    }
+    const auto oriented_side_b = oriented_c3d4_nodes(model_data, side_b_vertices);
+    const auto side_b_nodes = make_c3d10_from_tet(
+        model_data, oriented_side_b, original_vertices, original_mids, side_b_midpoints);
+
+    auto first = std::make_shared<C3D10>(element_id, side_a_nodes[0]);
+    first->_model_data = &model_data;
+    model_data.elements[static_cast<std::size_t>(element_id)] = first;
+    for (Index i = 1; i < side_a_nodes.size(); ++i) {
+        const ID new_id = model_data.next_free_element_id();
+        add_element_to_matching_sets(model_data, element_id, new_id);
+        model_data.insert_element(std::make_shared<C3D10>(new_id, side_a_nodes[i]));
+    }
+    const ID side_b_id = model_data.next_free_element_id();
+    add_element_to_matching_sets(model_data, element_id, side_b_id);
+    model_data.insert_element(std::make_shared<C3D10>(side_b_id, side_b_nodes));
+
+    section.side_a_nodes.insert(section.side_a_nodes.end(),
+                                side_a_interface.begin(), side_a_interface.end());
+    section.side_b_nodes.insert(section.side_b_nodes.end(),
+                                side_b_interface.begin(), side_b_interface.end());
+}
+
+void split_c3d10_four_edge_cut(
+    ModelData& model_data,
+    pretension::PretensionSection& section,
+    C3D10& element,
+    const Vec3& plane_point,
+    const Vec3& axis) {
+    const ID element_id = element.elem_id;
+    const auto old_nodes = element.node_ids;
+    const std::array<ID, 4> original_vertices = {
+        old_nodes[0], old_nodes[1], old_nodes[2], old_nodes[3]};
+    const std::array<ID, 6> original_mids = {
+        old_nodes[4], old_nodes[5], old_nodes[6],
+        old_nodes[7], old_nodes[8], old_nodes[9]};
+    std::array<Precision, 4> distances{};
+    std::array<Index, 2> positive{};
+    std::array<Index, 2> negative{};
+    Index positive_count = 0;
+    Index negative_count = 0;
+
+    for (Index i = 0; i < 4; ++i) {
+        const Vec3 position = model_data.positions->row_vec3(
+            static_cast<Index>(original_vertices[i]));
+        distances[i] = axis.dot(position - plane_point);
+        if (distances[i] > 0) {
+            positive[positive_count++] = i;
+        } else if (distances[i] < 0) {
+            negative[negative_count++] = i;
+        }
+    }
+    logging::error(positive_count == 2 && negative_count == 2,
+                   "CutBuilder: C3D10 four-edge cut requires two vertices on each side");
+
+    const std::array<std::pair<Index, Index>, 6> edge_map = {{
+        {0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 3}, {2, 3}
+    }};
+    for (Index edge = 0; edge < edge_map.size(); ++edge) {
+        const auto [a, b] = edge_map[edge];
+        const Vec3 pa = model_data.positions->row_vec3(static_cast<Index>(original_vertices[a]));
+        const Vec3 pb = model_data.positions->row_vec3(static_cast<Index>(original_vertices[b]));
+        const Vec3 pm = model_data.positions->row_vec3(static_cast<Index>(original_mids[edge]));
+        logging::error(pm.isApprox((pa + pb) * Precision(0.5), Precision(1e-10)),
+                       "CutBuilder: curved C3D10 edges are not supported yet");
+    }
+
+    std::array<std::array<ID, 2>, 2> side_a_interface{};
+    std::array<std::array<ID, 2>, 2> side_b_interface{};
+    for (Index n = 0; n < 2; ++n) {
+        for (Index p = 0; p < 2; ++p) {
+            const ID negative_node = original_vertices[negative[n]];
+            const ID positive_node = original_vertices[positive[p]];
+            const Vec3 negative_position = model_data.positions->row_vec3(static_cast<Index>(negative_node));
+            const Vec3 positive_position = model_data.positions->row_vec3(static_cast<Index>(positive_node));
+            const Precision parameter = distances[negative[n]] /
+                (distances[negative[n]] - distances[positive[p]]);
+            const Vec3 intersection = negative_position +
+                parameter * (positive_position - negative_position);
+            side_a_interface[n][p] = model_data.append_node(intersection);
+            side_b_interface[n][p] = model_data.append_node(intersection);
+            section.interface_pairs.push_back({
+                side_a_interface[n][p], side_b_interface[n][p]});
+        }
+    }
+
+    const std::array<std::array<ID, 4>, 3> side_a_vertices = {{
+        {original_vertices[negative[0]], original_vertices[negative[1]], side_a_interface[0][0], side_a_interface[0][1]},
+        {original_vertices[negative[1]], side_a_interface[0][0], side_a_interface[0][1], side_a_interface[1][1]},
+        {original_vertices[negative[1]], side_a_interface[0][0], side_a_interface[1][1], side_a_interface[1][0]}
+    }};
+    const std::array<std::array<ID, 4>, 3> side_b_vertices = {{
+        {original_vertices[positive[0]], original_vertices[positive[1]], side_b_interface[0][0], side_b_interface[1][0]},
+        {original_vertices[positive[1]], side_b_interface[0][0], side_b_interface[1][0], side_b_interface[1][1]},
+        {original_vertices[positive[1]], side_b_interface[0][0], side_b_interface[1][1], side_b_interface[0][1]}
+    }};
+
+    std::map<std::pair<ID, ID>, ID> side_a_midpoints;
+    std::map<std::pair<ID, ID>, ID> side_b_midpoints;
+    std::array<std::array<ID, 10>, 3> side_a_nodes{};
+    std::array<std::array<ID, 10>, 3> side_b_nodes{};
+    for (Index i = 0; i < 3; ++i) {
+        side_a_nodes[i] = make_c3d10_from_tet(
+            model_data, oriented_c3d4_nodes(model_data, side_a_vertices[i]),
+            original_vertices, original_mids, side_a_midpoints);
+        side_b_nodes[i] = make_c3d10_from_tet(
+            model_data, oriented_c3d4_nodes(model_data, side_b_vertices[i]),
+            original_vertices, original_mids, side_b_midpoints);
+    }
+
+    auto first = std::make_shared<C3D10>(element_id, side_a_nodes[0]);
+    first->_model_data = &model_data;
+    model_data.elements[static_cast<std::size_t>(element_id)] = first;
+    for (Index i = 1; i < 3; ++i) {
+        const ID new_id = model_data.next_free_element_id();
+        add_element_to_matching_sets(model_data, element_id, new_id);
+        model_data.insert_element(std::make_shared<C3D10>(new_id, side_a_nodes[i]));
+    }
+    for (const auto& nodes : side_b_nodes) {
+        const ID new_id = model_data.next_free_element_id();
+        add_element_to_matching_sets(model_data, element_id, new_id);
+        model_data.insert_element(std::make_shared<C3D10>(new_id, nodes));
+    }
+
+    for (const auto& pair : side_a_interface) {
+        section.side_a_nodes.push_back(pair[0]);
+        section.side_a_nodes.push_back(pair[1]);
+    }
+    for (const auto& pair : side_b_interface) {
+        section.side_b_nodes.push_back(pair[0]);
+        section.side_b_nodes.push_back(pair[1]);
+    }
+}
+
 } // namespace
 
 void CutBuilder::split(
@@ -345,14 +703,6 @@ void CutBuilder::split(
         }
     }
 
-    logging::error(axis.isApprox(Vec3::UnitX(), Precision(1e-12)) ||
-                   axis.isApprox(-Vec3::UnitX(), Precision(1e-12)) ||
-                   axis.isApprox(Vec3::UnitY(), Precision(1e-12)) ||
-                   axis.isApprox(-Vec3::UnitY(), Precision(1e-12)) ||
-                   axis.isApprox(Vec3::UnitZ(), Precision(1e-12)) ||
-                   axis.isApprox(-Vec3::UnitZ(), Precision(1e-12)),
-                   "CutBuilder: only global X, Y or Z axes are supported yet");
-
     const auto cut_elements = section.cut_element_ids;
     for (ID element_id : cut_elements) {
         ElementPtr& element = model_data.elements[static_cast<std::size_t>(element_id)];
@@ -364,13 +714,46 @@ void CutBuilder::split(
 
         auto* c3d4 = dynamic_cast<C3D4*>(element.get());
         if (c3d4 != nullptr) {
-            split_c3d4_three_edge_cut(model_data, section, *c3d4,
-                                       plane_point, axis);
+            Index positive_count = 0;
+            for (Index local_node = 0; local_node < 4; ++local_node) {
+                const Vec3 position = model_data.positions->row_vec3(
+                    static_cast<Index>(c3d4->node_ids[local_node]));
+                if (axis.dot(position - plane_point) > tolerance) {
+                    ++positive_count;
+                }
+            }
+            if (positive_count == 2) {
+                split_c3d4_four_edge_cut(model_data, section, *c3d4,
+                                         plane_point, axis);
+            } else {
+                split_c3d4_three_edge_cut(model_data, section, *c3d4,
+                                          plane_point, axis);
+            }
+            continue;
+        }
+
+        auto* c3d10 = dynamic_cast<C3D10*>(element.get());
+        if (c3d10 != nullptr) {
+            Index positive_count = 0;
+            for (Index local_node = 0; local_node < 4; ++local_node) {
+                const Vec3 position = model_data.positions->row_vec3(
+                    static_cast<Index>(c3d10->node_ids[local_node]));
+                if (axis.dot(position - plane_point) > tolerance) {
+                    ++positive_count;
+                }
+            }
+            if (positive_count == 2) {
+                split_c3d10_four_edge_cut(model_data, section, *c3d10,
+                                          plane_point, axis);
+            } else {
+                split_c3d10_three_edge_cut(model_data, section, *c3d10,
+                                           plane_point, axis);
+            }
             continue;
         }
 
         logging::error(false,
-                       "CutBuilder: only C3D8 and supported C3D4 cuts are implemented yet");
+                       "CutBuilder: only C3D8, C3D4 and supported C3D10 cuts are implemented yet");
     }
 
     logging::info(true,
