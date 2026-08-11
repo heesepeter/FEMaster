@@ -20,7 +20,7 @@ cmake-build-release/
 
 *.pyc
 *.exe
-*.inp
+*.frd
 *.out
 *.res
 *.aux

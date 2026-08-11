@@ -322,7 +322,7 @@ void Parser::allocate_model(const CountData& count) {
     // requiring five additional element slots.
     const int elements_per_section = std::max(1, base_elems);
     const int extra_nodes = 32 * elements_per_section * count.pretension_section_count;
-    const int extra_elems = 5 * elements_per_section * count.pretension_section_count;
+    const int extra_elems = 32 * elements_per_section * count.pretension_section_count;
 
     const int n_nodes = base_nodes + extra_nodes;
     const int n_elems = base_elems + extra_elems;

@@ -3,6 +3,8 @@
 #include "../core/types_eig.h"
 #include "../core/types_num.h"
 
+#include <array>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -44,6 +46,7 @@ struct PretensionSection {
     std::vector<ID> side_a_nodes;
     std::vector<ID> side_b_nodes;
     std::vector<InterfacePair> interface_pairs;
+    std::map<std::array<long long, 3>, InterfacePair> interface_node_cache;
     std::vector<ID> cut_element_ids;
     std::vector<CutFacet> facets;
 

@@ -21,6 +21,28 @@ namespace fem::model {
 
 namespace {
 
+pretension::InterfacePair get_or_create_interface_pair(
+    ModelData& model_data,
+    pretension::PretensionSection& section,
+    const Vec3& position) {
+    constexpr Precision key_scale = Precision(1e9);
+    const std::array<long long, 3> key = {
+        std::llround(position(0) * key_scale),
+        std::llround(position(1) * key_scale),
+        std::llround(position(2) * key_scale)};
+    const auto found = section.interface_node_cache.find(key);
+    if (found != section.interface_node_cache.end()) {
+        return found->second;
+    }
+
+    const pretension::InterfacePair pair{
+        model_data.append_node(position),
+        model_data.append_node(position)};
+    section.interface_node_cache.emplace(key, pair);
+    section.interface_pairs.push_back(pair);
+    return pair;
+}
+
 constexpr std::array<std::pair<Index, Index>, 12> c3d8_edges = {{
     {0, 1}, {3, 2}, {4, 5}, {7, 6},
     {0, 3}, {1, 2}, {4, 7}, {5, 6},
@@ -150,12 +172,9 @@ void split_c3d8_x_plane(
         const Precision parameter = distance_a / denominator;
         const Vec3 intersection = position_a + parameter * (position_b - position_a);
 
-        side_a_interface[i] = model_data.append_node(intersection);
-        side_b_interface[i] = model_data.append_node(intersection);
-
-        section.interface_pairs.push_back(reverse_sides
-            ? pretension::InterfacePair{side_b_interface[i], side_a_interface[i]}
-            : pretension::InterfacePair{side_a_interface[i], side_b_interface[i]});
+        const auto pair = get_or_create_interface_pair(model_data, section, intersection);
+        side_a_interface[i] = reverse_sides ? pair.side_b : pair.side_a;
+        side_b_interface[i] = reverse_sides ? pair.side_a : pair.side_b;
     }
 
     std::array<ID, 8> left_nodes{};
@@ -209,6 +228,40 @@ std::array<ID, 4> oriented_c3d4_nodes(
     logging::error(std::abs(volume6) > std::numeric_limits<Precision>::epsilon(),
                    "CutBuilder: generated C3D4 has zero volume");
     return nodes;
+}
+
+std::vector<ID> tetrahedralize_c3d8(
+    ModelData& model_data,
+    C3D8& element) {
+    const ID element_id = element.elem_id;
+    const auto& n = element.node_ids;
+    const std::array<std::array<ID, 4>, 5> raw_tets = {{
+        {n[0], n[1], n[3], n[4]},
+        {n[1], n[2], n[3], n[6]},
+        {n[1], n[3], n[4], n[6]},
+        {n[1], n[4], n[5], n[6]},
+        {n[3], n[4], n[6], n[7]}
+    }};
+
+    std::array<std::array<ID, 4>, 5> tets{};
+    for (Index i = 0; i < tets.size(); ++i) {
+        tets[i] = oriented_c3d4_nodes(model_data, raw_tets[i]);
+    }
+
+    std::vector<ID> ids;
+    ids.reserve(tets.size());
+    auto first = std::make_shared<C3D4>(element_id, tets[0]);
+    first->_model_data = &model_data;
+    model_data.elements[static_cast<std::size_t>(element_id)] = first;
+    ids.push_back(element_id);
+
+    for (Index i = 1; i < tets.size(); ++i) {
+        const ID new_id = model_data.next_free_element_id();
+        add_element_to_matching_sets(model_data, element_id, new_id);
+        model_data.insert_element(std::make_shared<C3D4>(new_id, tets[i]));
+        ids.push_back(new_id);
+    }
+    return ids;
 }
 
 std::array<ID, 10> make_c3d10_from_tet(
@@ -309,11 +362,9 @@ void split_c3d4_three_edge_cut(
         const Vec3 intersection = single_position +
             parameter * (three_position - single_position);
 
-        const ID side_a_node = model_data.append_node(intersection);
-        const ID side_b_node = model_data.append_node(intersection);
-        side_a_interface[i] = side_a_node;
-        side_b_interface[i] = side_b_node;
-        section.interface_pairs.push_back({side_a_node, side_b_node});
+        const auto pair = get_or_create_interface_pair(model_data, section, intersection);
+        side_a_interface[i] = pair.side_a;
+        side_b_interface[i] = pair.side_b;
     }
 
     std::array<std::array<ID, 4>, 3> side_a_tets{};
@@ -396,10 +447,9 @@ void split_c3d4_four_edge_cut(
             const Vec3 intersection = negative_position +
                 parameter * (positive_position - negative_position);
 
-            side_a_interface[n][p] = model_data.append_node(intersection);
-            side_b_interface[n][p] = model_data.append_node(intersection);
-            section.interface_pairs.push_back({
-                side_a_interface[n][p], side_b_interface[n][p]});
+            const auto pair = get_or_create_interface_pair(model_data, section, intersection);
+            side_a_interface[n][p] = pair.side_a;
+            side_b_interface[n][p] = pair.side_b;
         }
     }
 
@@ -443,6 +493,50 @@ void split_c3d4_four_edge_cut(
     for (const auto& pair : side_b_interface) {
         section.side_b_nodes.push_back(pair[0]);
         section.side_b_nodes.push_back(pair[1]);
+    }
+}
+
+void split_c3d4_element(
+    ModelData& model_data,
+    pretension::PretensionSection& section,
+    ID element_id,
+    const Vec3& plane_point,
+    const Vec3& axis,
+    Precision tolerance) {
+    auto* c3d4 = dynamic_cast<C3D4*>(
+        model_data.elements[static_cast<std::size_t>(element_id)].get());
+    logging::error(c3d4 != nullptr,
+                   "CutBuilder: expected a C3D4 after tetrahedralization");
+
+    Index positive_count = 0;
+    for (Index local_node = 0; local_node < 4; ++local_node) {
+        const Vec3 position = model_data.positions->row_vec3(
+            static_cast<Index>(c3d4->node_ids[local_node]));
+        if (axis.dot(position - plane_point) > tolerance) {
+            ++positive_count;
+        }
+    }
+    if (positive_count == 0 || positive_count == 4) {
+        return;
+    }
+    if (positive_count == 2) {
+        split_c3d4_four_edge_cut(model_data, section, *c3d4,
+                                 plane_point, axis);
+    } else if (positive_count == 3) {
+        const std::size_t pair_start = section.interface_pairs.size();
+        const std::size_t node_start = section.side_a_nodes.size();
+        split_c3d4_three_edge_cut(model_data, section, *c3d4,
+                                  plane_point, -axis);
+        for (std::size_t i = pair_start; i < section.interface_pairs.size(); ++i) {
+            std::swap(section.interface_pairs[i].side_a,
+                      section.interface_pairs[i].side_b);
+        }
+        for (std::size_t i = node_start; i < section.side_a_nodes.size(); ++i) {
+            std::swap(section.side_a_nodes[i], section.side_b_nodes[i]);
+        }
+    } else {
+        split_c3d4_three_edge_cut(model_data, section, *c3d4,
+                                  plane_point, axis);
     }
 }
 
@@ -504,9 +598,9 @@ void split_c3d10_three_edge_cut(
             (distances[single] - distances[three[i]]);
         const Vec3 intersection = single_position +
             parameter * (three_position - single_position);
-        side_a_interface[i] = model_data.append_node(intersection);
-        side_b_interface[i] = model_data.append_node(intersection);
-        section.interface_pairs.push_back({side_a_interface[i], side_b_interface[i]});
+        const auto pair = get_or_create_interface_pair(model_data, section, intersection);
+        side_a_interface[i] = pair.side_a;
+        side_b_interface[i] = pair.side_b;
     }
 
     const std::array<std::array<ID, 4>, 3> side_a_vertices = {{
@@ -603,10 +697,9 @@ void split_c3d10_four_edge_cut(
                 (distances[negative[n]] - distances[positive[p]]);
             const Vec3 intersection = negative_position +
                 parameter * (positive_position - negative_position);
-            side_a_interface[n][p] = model_data.append_node(intersection);
-            side_b_interface[n][p] = model_data.append_node(intersection);
-            section.interface_pairs.push_back({
-                side_a_interface[n][p], side_b_interface[n][p]});
+            const auto pair = get_or_create_interface_pair(model_data, section, intersection);
+            side_a_interface[n][p] = pair.side_a;
+            side_b_interface[n][p] = pair.side_b;
         }
     }
 
@@ -678,6 +771,7 @@ void CutBuilder::split(
     section.side_a_nodes.clear();
     section.side_b_nodes.clear();
     section.interface_pairs.clear();
+    section.interface_node_cache.clear();
 
     for (const ElementPtr& element : model_data.elements) {
         if (element == nullptr) {
@@ -708,27 +802,30 @@ void CutBuilder::split(
         ElementPtr& element = model_data.elements[static_cast<std::size_t>(element_id)];
         auto* c3d8 = dynamic_cast<C3D8*>(element.get());
         if (c3d8 != nullptr) {
-            split_c3d8_x_plane(model_data, section, *c3d8, plane_point, axis);
+            const bool axis_aligned =
+                axis.isApprox(Vec3::UnitX(), Precision(1e-12)) ||
+                axis.isApprox(-Vec3::UnitX(), Precision(1e-12)) ||
+                axis.isApprox(Vec3::UnitY(), Precision(1e-12)) ||
+                axis.isApprox(-Vec3::UnitY(), Precision(1e-12)) ||
+                axis.isApprox(Vec3::UnitZ(), Precision(1e-12)) ||
+                axis.isApprox(-Vec3::UnitZ(), Precision(1e-12));
+            if (axis_aligned) {
+                split_c3d8_x_plane(model_data, section, *c3d8,
+                                   plane_point, axis);
+            } else {
+                const auto tetrahedra = tetrahedralize_c3d8(model_data, *c3d8);
+                for (const ID tetra_id : tetrahedra) {
+                    split_c3d4_element(model_data, section, tetra_id,
+                                       plane_point, axis, tolerance);
+                }
+            }
             continue;
         }
 
         auto* c3d4 = dynamic_cast<C3D4*>(element.get());
         if (c3d4 != nullptr) {
-            Index positive_count = 0;
-            for (Index local_node = 0; local_node < 4; ++local_node) {
-                const Vec3 position = model_data.positions->row_vec3(
-                    static_cast<Index>(c3d4->node_ids[local_node]));
-                if (axis.dot(position - plane_point) > tolerance) {
-                    ++positive_count;
-                }
-            }
-            if (positive_count == 2) {
-                split_c3d4_four_edge_cut(model_data, section, *c3d4,
-                                         plane_point, axis);
-            } else {
-                split_c3d4_three_edge_cut(model_data, section, *c3d4,
-                                          plane_point, axis);
-            }
+            split_c3d4_element(model_data, section, c3d4->elem_id,
+                               plane_point, axis, tolerance);
             continue;
         }
 
@@ -745,6 +842,18 @@ void CutBuilder::split(
             if (positive_count == 2) {
                 split_c3d10_four_edge_cut(model_data, section, *c3d10,
                                           plane_point, axis);
+            } else if (positive_count == 3) {
+                const std::size_t pair_start = section.interface_pairs.size();
+                const std::size_t node_start = section.side_a_nodes.size();
+                split_c3d10_three_edge_cut(model_data, section, *c3d10,
+                                           plane_point, -axis);
+                for (std::size_t i = pair_start; i < section.interface_pairs.size(); ++i) {
+                    std::swap(section.interface_pairs[i].side_a,
+                              section.interface_pairs[i].side_b);
+                }
+                for (std::size_t i = node_start; i < section.side_a_nodes.size(); ++i) {
+                    std::swap(section.side_a_nodes[i], section.side_b_nodes[i]);
+                }
             } else {
                 split_c3d10_three_edge_cut(model_data, section, *c3d10,
                                            plane_point, axis);
