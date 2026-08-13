@@ -193,6 +193,7 @@ struct Model {
     // building loads for every node including non existing ones
     Field                 build_load_matrix(std::vector<std::string> load_sets = {}, Precision time = 0);
     Field                 build_pretension_force_matrix();
+    Field                 build_pretension_gap_matrix(const Field& displacement);
     std::vector<std::pair<bc::Amplitude::Ptr, Field>> build_load_basis(std::vector<std::string> load_sets = {});
     constraint::ConstraintGroups collect_constraints(SystemDofIds& system_dof_ids, const std::vector<std::string>& supp_sets = {});
     constraint::Equations build_constraints(SystemDofIds& system_dof_ids, std::vector<std::string> supp_sets = {});

@@ -26,6 +26,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace fem {
 namespace loadcase { struct LoadCase; }
@@ -106,6 +107,13 @@ public:
     void clear_active_loadcase();
     const std::string& active_loadcase_type() const;
 
+    // Pretension actions belonging to the currently parsed loadcase.
+    void queue_pretension_action(const std::string& section,
+                                 const std::string& action,
+                                 const std::string& control,
+                                 Precision value);
+    void apply_queued_pretension_actions();
+
 private:
     /**
      * @struct CountData
@@ -144,6 +152,14 @@ private:
     std::unique_ptr<loadcase::LoadCase> m_active_loadcase;
     std::string                         m_active_loadcase_type;
     int                                 m_next_loadcase_id = 1;
+
+    struct PretensionAction {
+        std::string section;
+        std::string action;
+        std::string control;
+        Precision   value = 0;
+    };
+    std::vector<PretensionAction> m_queued_pretension_actions;
 };
 
 // Typed access to the active load case

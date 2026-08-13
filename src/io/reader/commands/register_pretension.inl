@@ -10,6 +10,8 @@
 #include "../../../core/types_num.h"
 #include "../../../model/model.h"
 
+namespace fem::io::reader { class Parser; }
+
 namespace fem::io::reader::commands {
 
 using PretensionSectionCountSink = std::function<void()>;
@@ -91,9 +93,10 @@ inline void register_pretension_section_count(
 
 inline void register_pretension(
     fem::io::dsl::Registry& registry,
-    model::Model& model) {
+    model::Model& model,
+    fem::io::reader::Parser& parser) {
     registry.command("PRETENSION", [&](fem::io::dsl::Command& command) {
-        command.allow_if(fem::io::dsl::Condition::parent_is("ROOT"));
+        command.allow_if(fem::io::dsl::Condition::parent_is({"ROOT", "LOADCASE"}));
         command.doc("Apply or lock a pretension section.");
 
         command.keyword(
@@ -111,9 +114,16 @@ inline void register_pretension(
                     .optional("0")
                     .doc("Force or relative displacement value"));
 
-        command.on_enter([&model](const fem::io::dsl::Keys& keys) {
+        command.on_enter([&model, &parser](const fem::io::dsl::Keys& keys) {
             const std::string section = keys.raw("SECTION");
             const std::string action = keys.raw("ACTION");
+
+            if (parser.active_loadcase()) {
+                parser.queue_pretension_action(
+                    section, action, keys.raw("CONTROL"),
+                    keys.get<fem::Precision>("VALUE"));
+                return;
+            }
 
             if (action == "LOCK") {
                 model.lock_pretension_section(section);

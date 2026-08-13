@@ -69,6 +69,7 @@ inline void register_loadcase_begin(fem::io::dsl::Registry& registry, Parser& pa
                 return;
             }
             try {
+                parser.apply_queued_pretension_actions();
                 lc->run();
             } catch (const std::exception& e) {
                 throw std::runtime_error(std::string("LOADCASE execution failed: ") + e.what());

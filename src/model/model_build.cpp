@@ -323,6 +323,44 @@ Field Model::build_pretension_force_matrix() {
     return force_matrix;
 }
 
+Field Model::build_pretension_gap_matrix(const Field& displacement) {
+    logging::error(displacement.domain == FieldDomain::NODE && displacement.components >= 3,
+                   "Pretension gap output requires a nodal displacement field");
+    Field gap_matrix{"PRETENSION_GAP", FieldDomain::NODE,
+                     static_cast<Index>(this->_data->max_nodes), 1};
+    gap_matrix.set_zero();
+
+    for (const auto& section : this->_data->pretension_sections) {
+        if (!section || section->interface_pairs.empty()) {
+            continue;
+        }
+        const Precision axis_norm = section->axis_direction.norm();
+        logging::error(axis_norm > Precision(0),
+                       "Pretension section '", section->name,
+                       "' has a zero axis direction");
+        const Vec3 axis = section->axis_direction / axis_norm;
+        for (const auto& pair : section->interface_pairs) {
+            if (pair.side_a < 0 || pair.side_b < 0 ||
+                pair.side_a >= static_cast<ID>(displacement.rows) ||
+                pair.side_b >= static_cast<ID>(displacement.rows)) {
+                continue;
+            }
+            const Precision measured_gap = axis(0) *
+                (displacement(pair.side_b, 0) - displacement(pair.side_a, 0)) +
+                axis(1) *
+                (displacement(pair.side_b, 1) - displacement(pair.side_a, 1)) +
+                axis(2) *
+                (displacement(pair.side_b, 2) - displacement(pair.side_a, 2));
+            const Precision gap = section->control == pretension::Control::Displacement
+                ? (section->state == pretension::State::Locked
+                    ? section->locked_gap : section->prescribed_value)
+                : measured_gap;
+            gap_matrix(pair.side_a, 0) = gap;
+        }
+    }
+    return gap_matrix;
+}
+
 Field Model::build_load_matrix(std::vector<std::string> load_sets, Precision time) {
     Field load_matrix{"LOAD_MATRIX", FieldDomain::NODE, static_cast<Index>(this->_data->max_nodes), 6};
     load_matrix.set_zero();

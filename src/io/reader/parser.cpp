@@ -233,6 +233,28 @@ const std::string& Parser::active_loadcase_type() const {
     return m_active_loadcase_type.empty() ? empty : m_active_loadcase_type;
 }
 
+void Parser::queue_pretension_action(const std::string& section,
+                                     const std::string& action,
+                                     const std::string& control,
+                                     Precision value) {
+    m_queued_pretension_actions.push_back({section, action, control, value});
+}
+
+void Parser::apply_queued_pretension_actions() {
+    for (const auto& action : m_queued_pretension_actions) {
+        if (action.action == "LOCK") {
+            model().lock_pretension_section(action.section);
+            continue;
+        }
+
+        const auto mode = action.control == "FORCE"
+            ? pretension::Control::Force
+            : pretension::Control::Displacement;
+        model().set_pretension_load(action.section, mode, action.value);
+    }
+    m_queued_pretension_actions.clear();
+}
+
 // ----------------- Parser stages -----------------
 
 Parser::CountData Parser::run_count_stage(const std::string& input_path) {
@@ -377,6 +399,8 @@ void Parser::run_data_stage(const std::string&                   input_path,
     io::dsl::Engine engine(registry);
     engine.run(file);
 
+    m_writer.write_pretension_sections(*m_model->_data);
+
     m_writer.close();
 }
 
@@ -469,7 +493,7 @@ void Parser::register_analysis_commands(io::dsl::Registry& reg) {
     commands::register_tie(reg, mdl);
     commands::register_contact(reg, mdl);
     commands::register_pretension_section(reg, mdl);
-    commands::register_pretension(reg, mdl);
+    commands::register_pretension(reg, mdl, *this);
 
     // Profiles & sections & elements
     commands::register_profile(reg, mdl);
