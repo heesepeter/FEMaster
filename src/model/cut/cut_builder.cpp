@@ -25,7 +25,8 @@ namespace {
 pretension::InterfacePair get_or_create_interface_pair(
     ModelData& model_data,
     pretension::PretensionSection& section,
-    const Vec3& position) {
+    const Vec3& position,
+    bool reverse_sides = false) {
     constexpr Precision key_scale = Precision(1e9);
     const std::array<long long, 3> key = {
         std::llround(position(0) * key_scale),
@@ -36,9 +37,12 @@ pretension::InterfacePair get_or_create_interface_pair(
         return found->second;
     }
 
-    const pretension::InterfacePair pair{
+    pretension::InterfacePair pair{
         model_data.append_node(position),
         model_data.append_node(position)};
+    if (reverse_sides) {
+        std::swap(pair.side_a, pair.side_b);
+    }
     section.interface_node_cache.emplace(key, pair);
     section.interface_pairs.push_back(pair);
     return pair;
@@ -579,7 +583,8 @@ void split_c3d4_three_edge_cut(
     pretension::PretensionSection& section,
     C3D4& element,
     const Vec3& plane_point,
-    const Vec3& axis) {
+    const Vec3& axis,
+    bool reverse_sides) {
     const ID element_id = element.elem_id;
     const auto old_nodes = element.node_ids;
     std::array<Precision, 4> distances{};
@@ -622,9 +627,10 @@ void split_c3d4_three_edge_cut(
         const Vec3 intersection = single_position +
             parameter * (three_position - single_position);
 
-        const auto pair = get_or_create_interface_pair(model_data, section, intersection);
-        side_a_interface[i] = pair.side_a;
-        side_b_interface[i] = pair.side_b;
+        const auto pair = get_or_create_interface_pair(
+            model_data, section, intersection, reverse_sides);
+        side_a_interface[i] = reverse_sides ? pair.side_b : pair.side_a;
+        side_b_interface[i] = reverse_sides ? pair.side_a : pair.side_b;
     }
 
     std::array<std::array<ID, 4>, 3> side_a_tets{};
@@ -783,20 +789,11 @@ void split_c3d4_element(
         split_c3d4_four_edge_cut(model_data, section, *c3d4,
                                  plane_point, axis);
     } else if (positive_count == 3) {
-        const std::size_t pair_start = section.interface_pairs.size();
-        const std::size_t node_start = section.side_a_nodes.size();
         split_c3d4_three_edge_cut(model_data, section, *c3d4,
-                                  plane_point, -axis);
-        for (std::size_t i = pair_start; i < section.interface_pairs.size(); ++i) {
-            std::swap(section.interface_pairs[i].side_a,
-                      section.interface_pairs[i].side_b);
-        }
-        for (std::size_t i = node_start; i < section.side_a_nodes.size(); ++i) {
-            std::swap(section.side_a_nodes[i], section.side_b_nodes[i]);
-        }
+                                  plane_point, -axis, true);
     } else {
         split_c3d4_three_edge_cut(model_data, section, *c3d4,
-                                  plane_point, axis);
+                                  plane_point, axis, false);
     }
 }
 
