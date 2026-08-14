@@ -130,12 +130,16 @@
       "name": "windows-msvc-base",
       "hidden": true,
       "inherits": "common",
-      "generator": "Visual Studio 18 2026",
+      "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
+      },
+        "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "C:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "FEMASTER_DEPS_INCLUDE_DIR": "C:/FEMasterDeps/include"
       }
     },
     {

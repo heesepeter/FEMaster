@@ -273,8 +273,12 @@ auto SolidElement<N>::green_lagrange_strain_displacement(const StaticMatrix<N, D
  * @return Global material tangent at zero Green-Lagrange strain.
  */
 template<Index N>
-auto SolidElement<N>::material_tangent_reference(Precision r, Precision s, Precision t, Precision* state)
-    -> StaticMatrix<n_strain, n_strain> {
+Mat6 SolidElement<N>::material_tangent_reference(
+    Precision r,
+    Precision s,
+    Precision t,
+    Precision* state
+) {
     VolumeStrainGreenLagrange zero_strain;
     VolumeStressPK2           zero_stress;
     Mat6                      tangent;
