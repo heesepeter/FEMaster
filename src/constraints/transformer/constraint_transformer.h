@@ -111,7 +111,11 @@ public:
         // Relative regularization applied to the diagonal of the Lagrange
         // multiplier block. The effective value is scaled with a characteristic
         // stiffness extracted from the supplied system matrix.
-        Precision lagrange_regularization{Precision(1e-10)};
+        // Exact Lagrange constraints are required for prescribed gaps and
+        // supports. A nonzero multiplier regularization changes C*u=d into
+        // C*u - eps*lambda=d and can noticeably violate displacement
+        // constraints for stiff models.
+        Precision lagrange_regularization{Precision(0)};
     };
 
 private:
@@ -271,7 +275,7 @@ public:
         const SparseMatrix&  matrix,
         const DynamicVector& rhs,
         const DynamicVector& solution,
-        Precision            constraint_tolerance = Precision(1e-10),
+        Precision            constraint_tolerance = Precision(1e-8),
         Precision            reduced_tolerance    = Precision(1e-8),
         Precision            full_tolerance       = std::numeric_limits<Precision>::infinity()
     ) const;
@@ -319,4 +323,3 @@ private:
 
 } // namespace constraint
 } // namespace fem
-
