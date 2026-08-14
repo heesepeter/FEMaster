@@ -275,6 +275,66 @@ void split_face_aligned_c3d4(
     }
 }
 
+void log_c3d4_interface_quality(
+    ModelData& model_data,
+    const pretension::PretensionSection& section) {
+    std::set<ID> interface_nodes;
+    for (const auto& pair : section.interface_pairs) {
+        interface_nodes.insert(pair.side_a);
+        interface_nodes.insert(pair.side_b);
+    }
+
+    Precision minimum_volume = std::numeric_limits<Precision>::max();
+    Precision minimum_edge = std::numeric_limits<Precision>::max();
+    ID minimum_volume_element = -1;
+    ID minimum_edge_element = -1;
+    Index checked_elements = 0;
+
+    for (const ElementPtr& element : model_data.elements) {
+        auto* c3d4 = element == nullptr ? nullptr : dynamic_cast<C3D4*>(element.get());
+        if (c3d4 == nullptr) continue;
+
+        bool touches_interface = false;
+        for (const ID node_id : c3d4->node_ids) {
+            touches_interface = touches_interface || interface_nodes.count(node_id) > 0;
+        }
+        if (!touches_interface) continue;
+
+        const auto& nodes = c3d4->node_ids;
+        const Vec3 p0 = model_data.positions->row_vec3(static_cast<Index>(nodes[0]));
+        const Vec3 p1 = model_data.positions->row_vec3(static_cast<Index>(nodes[1]));
+        const Vec3 p2 = model_data.positions->row_vec3(static_cast<Index>(nodes[2]));
+        const Vec3 p3 = model_data.positions->row_vec3(static_cast<Index>(nodes[3]));
+        const Precision volume = std::abs((p1 - p0).dot((p2 - p0).cross(p3 - p0))) /
+            Precision(6);
+        minimum_volume = std::min(minimum_volume, volume);
+        if (volume == minimum_volume) minimum_volume_element = c3d4->elem_id;
+
+        constexpr std::array<std::pair<Index, Index>, 6> edges = {{
+            {0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}
+        }};
+        for (const auto [a, b] : edges) {
+            const Precision edge = (model_data.positions->row_vec3(
+                static_cast<Index>(nodes[a])) - model_data.positions->row_vec3(
+                static_cast<Index>(nodes[b]))).norm();
+            if (edge < minimum_edge) {
+                minimum_edge = edge;
+                minimum_edge_element = c3d4->elem_id;
+            }
+        }
+        ++checked_elements;
+    }
+
+    if (checked_elements == 0) return;
+    logging::info(true,
+                  "PRETENSIONSECTION '", section.name,
+                  "': C3D4 interface quality over ", checked_elements,
+                  " elements: minimum volume = ", minimum_volume,
+                  " (element ", minimum_volume_element,
+                  "), minimum edge = ", minimum_edge,
+                  " (element ", minimum_edge_element, ")");
+}
+
 std::vector<std::pair<ID, ID>> find_crossing_edges(
     ModelData& model_data,
     const std::array<ID, 8>& node_ids,
@@ -1129,6 +1189,8 @@ void CutBuilder::split(
         logging::error(false,
                        "CutBuilder: only C3D8, C3D4 and supported C3D10 cuts are implemented yet");
     }
+
+    log_c3d4_interface_quality(model_data, section);
 
     logging::info(true,
                   "PRETENSIONSECTION '", section.name,
