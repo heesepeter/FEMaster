@@ -97,7 +97,7 @@ void split_c3d8_x_plane(
     const Vec3& plane_point,
     const Vec3& axis) {
     const ID element_id = element.elem_id;
-    const auto old_nodes = element.node_ids;
+    auto old_nodes = element.node_ids;
     const bool x_positive = axis.isApprox(Vec3::UnitX(), Precision(1e-12));
     const bool x_negative = axis.isApprox(-Vec3::UnitX(), Precision(1e-12));
     const bool y_positive = axis.isApprox(Vec3::UnitY(), Precision(1e-12));
@@ -117,27 +117,65 @@ void split_c3d8_x_plane(
     std::array<ID, 4> positive_nodes{};
     std::array<std::pair<ID, ID>, 4> crossing_edges{};
 
-    if (x_axis) {
-        negative_nodes = {old_nodes[0], old_nodes[3], old_nodes[4], old_nodes[7]};
-        positive_nodes = {old_nodes[1], old_nodes[2], old_nodes[5], old_nodes[6]};
-        crossing_edges = {{{old_nodes[0], old_nodes[1]},
-                           {old_nodes[3], old_nodes[2]},
-                           {old_nodes[4], old_nodes[5]},
-                           {old_nodes[7], old_nodes[6]}}};
-    } else if (y_axis) {
-        negative_nodes = {old_nodes[0], old_nodes[1], old_nodes[5], old_nodes[4]};
-        positive_nodes = {old_nodes[3], old_nodes[2], old_nodes[6], old_nodes[7]};
-        crossing_edges = {{{old_nodes[0], old_nodes[3]},
-                           {old_nodes[1], old_nodes[2]},
-                           {old_nodes[5], old_nodes[6]},
-                           {old_nodes[4], old_nodes[7]}}};
-    } else {
-        negative_nodes = {old_nodes[0], old_nodes[1], old_nodes[2], old_nodes[3]};
-        positive_nodes = {old_nodes[4], old_nodes[5], old_nodes[6], old_nodes[7]};
-        crossing_edges = {{{old_nodes[0], old_nodes[4]},
-                           {old_nodes[1], old_nodes[5]},
-                           {old_nodes[2], old_nodes[6]},
-                           {old_nodes[3], old_nodes[7]}}};
+    const auto configure_groups = [&]() {
+        if (x_axis) {
+            negative_nodes = {old_nodes[0], old_nodes[3], old_nodes[4], old_nodes[7]};
+            positive_nodes = {old_nodes[1], old_nodes[2], old_nodes[5], old_nodes[6]};
+            crossing_edges = {{{old_nodes[0], old_nodes[1]},
+                               {old_nodes[3], old_nodes[2]},
+                               {old_nodes[4], old_nodes[5]},
+                               {old_nodes[7], old_nodes[6]}}};
+        } else if (y_axis) {
+            negative_nodes = {old_nodes[0], old_nodes[1], old_nodes[5], old_nodes[4]};
+            positive_nodes = {old_nodes[3], old_nodes[2], old_nodes[6], old_nodes[7]};
+            crossing_edges = {{{old_nodes[0], old_nodes[3]},
+                               {old_nodes[1], old_nodes[2]},
+                               {old_nodes[5], old_nodes[6]},
+                               {old_nodes[4], old_nodes[7]}}};
+        } else {
+            negative_nodes = {old_nodes[0], old_nodes[1], old_nodes[2], old_nodes[3]};
+            positive_nodes = {old_nodes[4], old_nodes[5], old_nodes[6], old_nodes[7]};
+            crossing_edges = {{{old_nodes[0], old_nodes[4]},
+                               {old_nodes[1], old_nodes[5]},
+                               {old_nodes[2], old_nodes[6]},
+                               {old_nodes[3], old_nodes[7]}}};
+        }
+    };
+    configure_groups();
+
+    const auto group_is_on_expected_side = [&](const auto& nodes, bool negative) {
+        for (const ID node_id : nodes) {
+            const Vec3 position = model_data.positions->row_vec3(static_cast<Index>(node_id));
+            const Precision distance = split_axis.dot(position - plane_point);
+            if (negative ? !(distance < 0) : !(distance > 0)) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // Gmsh may orient a valid C3D8 with the two axial node layers reversed.
+    // Reorder only the local working copy so the split logic always receives
+    // the canonical negative-side/positive-side connectivity.
+    const bool canonical = group_is_on_expected_side(negative_nodes, true) &&
+                           group_is_on_expected_side(positive_nodes, false);
+    const bool reversed = group_is_on_expected_side(negative_nodes, false) &&
+                          group_is_on_expected_side(positive_nodes, true);
+    if (!canonical && reversed) {
+        if (x_axis) {
+            old_nodes = {old_nodes[1], old_nodes[0], old_nodes[3], old_nodes[2],
+                         old_nodes[5], old_nodes[4], old_nodes[7], old_nodes[6]};
+        } else if (y_axis) {
+            old_nodes = {old_nodes[3], old_nodes[2], old_nodes[1], old_nodes[0],
+                         old_nodes[7], old_nodes[6], old_nodes[5], old_nodes[4]};
+        } else {
+            // Swap the z-layers and reverse their in-plane winding.  The
+            // winding reversal preserves the positive C3D8 Jacobian while
+            // putting the lower layer into slots 0..3.
+            old_nodes = {old_nodes[4], old_nodes[7], old_nodes[6], old_nodes[5],
+                         old_nodes[0], old_nodes[3], old_nodes[2], old_nodes[1]};
+        }
+        configure_groups();
     }
 
     for (ID node_id : negative_nodes) {
