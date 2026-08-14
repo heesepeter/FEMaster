@@ -14,6 +14,7 @@
 #include "../bc/support_collector.h"
 
 #include <algorithm>
+#include <limits>
 
 namespace fem {
 namespace model {
@@ -213,6 +214,8 @@ void Model::add_pretension_section(
     section->cylinder_surface_set = surface_set;
     section->axis_direction = axis.normalized();
     Vec3 surface_center = Vec3::Zero();
+    Precision minimum_axis_coordinate = std::numeric_limits<Precision>::max();
+    Precision maximum_axis_coordinate = std::numeric_limits<Precision>::lowest();
     Index surface_node_count = 0;
     std::vector<bool> used_nodes(static_cast<std::size_t>(_data->max_nodes), false);
 
@@ -236,6 +239,13 @@ void Model::add_pretension_section(
             surface_center(0) += (*_data->positions)(node, 0);
             surface_center(1) += (*_data->positions)(node, 1);
             surface_center(2) += (*_data->positions)(node, 2);
+            const Vec3 node_position = _data->positions->row_vec3(node);
+            const Precision axis_coordinate =
+                section->axis_direction.dot(node_position);
+            minimum_axis_coordinate = std::min(
+                minimum_axis_coordinate, axis_coordinate);
+            maximum_axis_coordinate = std::max(
+                maximum_axis_coordinate, axis_coordinate);
             ++surface_node_count;
         }
     }
@@ -243,8 +253,12 @@ void Model::add_pretension_section(
     logging::error(surface_node_count > 0,
                    "PRETENSION SECTION: surface set ", surface_set,
                    " has no valid surface nodes");
-    section->axis_origin = surface_center /
-        static_cast<Precision>(surface_node_count);
+    surface_center /= static_cast<Precision>(surface_node_count);
+    const Precision middle_axis_coordinate =
+        (minimum_axis_coordinate + maximum_axis_coordinate) * Precision(0.5);
+    section->axis_origin = surface_center +
+        (middle_axis_coordinate - section->axis_direction.dot(surface_center)) *
+            section->axis_direction;
     section->cut_coordinate = Precision(0);
 
     _data->pretension_sections.push_back(std::move(section));

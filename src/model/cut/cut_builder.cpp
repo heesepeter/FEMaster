@@ -57,6 +57,7 @@ constexpr std::array<std::array<Index, 4>, 6> c3d8_faces = {{
 }};
 
 using FaceKey = std::array<ID, 4>;
+using TetFaceKey = std::array<ID, 3>;
 
 FaceKey make_face_key(const std::array<ID, 8>& nodes,
                      const std::array<Index, 4>& face) {
@@ -64,6 +65,38 @@ FaceKey make_face_key(const std::array<ID, 8>& nodes,
         nodes[face[0]], nodes[face[1]], nodes[face[2]], nodes[face[3]]};
     std::sort(key.begin(), key.end());
     return key;
+}
+
+constexpr std::array<std::array<Index, 3>, 4> c3d4_faces = {{
+    {{0, 1, 2}}, {{0, 3, 1}}, {{1, 3, 2}}, {{2, 3, 0}}
+}};
+
+TetFaceKey make_face_key(const std::array<ID, 4>& nodes,
+                         const std::array<Index, 3>& face) {
+    TetFaceKey key = {
+        nodes[face[0]], nodes[face[1]], nodes[face[2]]};
+    std::sort(key.begin(), key.end());
+    return key;
+}
+
+int c3d4_side_of_element(
+    ModelData& model_data,
+    const std::array<ID, 4>& nodes,
+    const Vec3& plane_point,
+    const Vec3& axis,
+    Precision tolerance) {
+    bool has_negative = false;
+    bool has_positive = false;
+    for (const ID node_id : nodes) {
+        const Vec3 position = model_data.positions->row_vec3(
+            static_cast<Index>(node_id));
+        const Precision distance = axis.dot(position - plane_point);
+        has_negative = has_negative || distance < -tolerance;
+        has_positive = has_positive || distance > tolerance;
+    }
+    if (has_negative && !has_positive) return -1;
+    if (has_positive && !has_negative) return 1;
+    return 0;
 }
 
 int c3d8_side_of_element(
@@ -162,6 +195,78 @@ void split_face_aligned_c3d8(
                     std::llround(model_data.positions->row_vec3(static_cast<Index>(node_id))(0) * Precision(1e9)),
                     std::llround(model_data.positions->row_vec3(static_cast<Index>(node_id))(1) * Precision(1e9)),
                     std::llround(model_data.positions->row_vec3(static_cast<Index>(node_id))(2) * Precision(1e9))}).side_b);
+        }
+    }
+}
+
+void split_face_aligned_c3d4(
+    ModelData& model_data,
+    pretension::PretensionSection& section,
+    const Vec3& plane_point,
+    const Vec3& axis,
+    Precision tolerance) {
+    struct FaceRecord {
+        int side = 0;
+    };
+
+    std::map<TetFaceKey, std::vector<FaceRecord>> faces;
+    for (const ElementPtr& element : model_data.elements) {
+        auto* c3d4 = element == nullptr ? nullptr : dynamic_cast<C3D4*>(element.get());
+        if (c3d4 == nullptr) continue;
+
+        const auto nodes = c3d4->node_ids;
+        const int side = c3d4_side_of_element(
+            model_data, nodes, plane_point, axis, tolerance);
+        if (side == 0) continue;
+
+        for (const auto& face : c3d4_faces) {
+            bool on_plane = true;
+            for (const Index local_node : face) {
+                const Vec3 position = model_data.positions->row_vec3(
+                    static_cast<Index>(nodes[local_node]));
+                if (std::abs(axis.dot(position - plane_point)) > tolerance) {
+                    on_plane = false;
+                    break;
+                }
+            }
+            if (on_plane) {
+                faces[make_face_key(nodes, face)].push_back({side});
+            }
+        }
+    }
+
+    std::map<ID, pretension::InterfacePair> node_pairs;
+    for (const auto& [face, records] : faces) {
+        bool has_negative = false;
+        bool has_positive = false;
+        for (const auto& record : records) {
+            has_negative = has_negative || record.side < 0;
+            has_positive = has_positive || record.side > 0;
+        }
+        if (!has_negative || !has_positive) continue;
+
+        for (const ID node_id : face) {
+            if (node_pairs.find(node_id) != node_pairs.end()) continue;
+            const Vec3 position = model_data.positions->row_vec3(
+                static_cast<Index>(node_id));
+            const auto pair = get_or_create_interface_pair(
+                model_data, section, position);
+            node_pairs.emplace(node_id, pair);
+            section.side_a_nodes.push_back(pair.side_a);
+            section.side_b_nodes.push_back(pair.side_b);
+        }
+    }
+
+    if (node_pairs.empty()) return;
+
+    for (const ElementPtr& element : model_data.elements) {
+        auto* c3d4 = element == nullptr ? nullptr : dynamic_cast<C3D4*>(element.get());
+        if (c3d4 == nullptr || c3d4_side_of_element(
+                model_data, c3d4->node_ids, plane_point, axis, tolerance) <= 0) {
+            continue;
+        }
+        for (const auto& [node_id, pair] : node_pairs) {
+            c3d4->replace_node(node_id, pair.side_b);
         }
     }
 }
@@ -931,6 +1036,8 @@ void CutBuilder::split(
     // Handle a mesh-aligned cut before looking for elements crossed by the
     // plane. In this case the plane coincides with an existing element face
     // and no element has nodes on both sides of it.
+    split_face_aligned_c3d4(
+        model_data, section, plane_point, axis, tolerance);
     split_face_aligned_c3d8(
         model_data, section, plane_point, axis, tolerance);
 
