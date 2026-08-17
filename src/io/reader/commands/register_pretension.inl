@@ -35,16 +35,22 @@ inline void register_pretension_section(
                 .key("POSITION")
                     .optional("MIDDLE")
                     .allowed({"MIDDLE"})
-                    .doc("Cut position along the cylinder axis"));
+                    .doc("Cut position along the cylinder axis")
+                .key("SNAP")
+                    .optional("0.02")
+                    .doc("Relative C3D4 node-to-plane snapping tolerance"));
 
         auto name = std::make_shared<std::string>();
         auto surface = std::make_shared<std::string>();
         auto position = std::make_shared<std::string>();
 
-        command.on_enter([name, surface, position](const fem::io::dsl::Keys& keys) {
+        auto snap_ratio = std::make_shared<fem::Precision>(fem::Precision(0.02));
+
+        command.on_enter([name, surface, position, snap_ratio](const fem::io::dsl::Keys& keys) {
             *name = keys.raw("NAME");
             *surface = keys.raw("SURFACE");
             *position = keys.raw("POSITION");
+            *snap_ratio = keys.get<fem::Precision>("SNAP");
         });
 
         command.variant(
@@ -55,13 +61,14 @@ inline void register_pretension_section(
                         .fixed<fem::Precision, 3>()
                         .name("AXIS")
                         .desc("Cylinder-axis direction"))
-                    .bind([&model, name, surface, position](
+                    .bind([&model, name, surface, position, snap_ratio](
                               const std::array<fem::Precision, 3>& values) {
                         model.add_pretension_section(
                             *name,
                             *surface,
                             fem::Vec3{values[0], values[1], values[2]},
-                            *position);
+                            *position,
+                            *snap_ratio);
                     })));
     });
 }
@@ -76,7 +83,8 @@ inline void register_pretension_section_count(
             fem::io::dsl::KeywordSpec::make()
                 .key("NAME").required()
                 .key("SURFACE").required()
-                .key("POSITION").optional("MIDDLE"));
+                .key("POSITION").optional("MIDDLE")
+                .key("SNAP").optional("0.02"));
 
         command.variant(
             fem::io::dsl::Variant::make()

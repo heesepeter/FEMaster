@@ -1,8 +1,8 @@
 // Created by Finn on 19.10.2024
 
 #include "c3d13.h"
-#include "../geometry/surface/surface4.h"
-#include "../geometry/surface/surface3.h"
+#include "../geometry/surface/surface6.h"
+#include "../geometry/surface/surface8.h"
 
 namespace fem {
 namespace model {
@@ -15,9 +15,29 @@ const math::quadrature::Quadrature& C3D13::integration_scheme() const {
     return quad;
 }
 SurfacePtr C3D13::surface(ID surface_id) {
-    // TODO: implement this
-    (void) surface_id;
-    return nullptr;
+    switch (surface_id) {
+        case 1:
+            return std::make_shared<Surface8>(std::array<ID, 8>{
+                node_ids[0], node_ids[1], node_ids[2], node_ids[3],
+                node_ids[5], node_ids[6], node_ids[7], node_ids[8]});
+        case 2:
+            return std::make_shared<Surface6>(std::array<ID, 6>{
+                node_ids[0], node_ids[1], node_ids[4],
+                node_ids[5], node_ids[10], node_ids[9]});
+        case 3:
+            return std::make_shared<Surface6>(std::array<ID, 6>{
+                node_ids[1], node_ids[2], node_ids[4],
+                node_ids[6], node_ids[11], node_ids[10]});
+        case 4:
+            return std::make_shared<Surface6>(std::array<ID, 6>{
+                node_ids[2], node_ids[3], node_ids[4],
+                node_ids[7], node_ids[12], node_ids[11]});
+        case 5:
+            return std::make_shared<Surface6>(std::array<ID, 6>{
+                node_ids[3], node_ids[0], node_ids[4],
+                node_ids[8], node_ids[9], node_ids[12]});
+        default: return nullptr;
+    }
 }
 
 StaticMatrix<13, 1> C3D13::shape_function(Precision r, Precision s, Precision t) {

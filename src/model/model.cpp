@@ -190,7 +190,8 @@ void Model::add_pretension_section(
     const std::string& name,
     const std::string& surface_set,
     Vec3 axis,
-    const std::string& position) {
+    const std::string& position,
+    Precision snap_ratio) {
     logging::error(!name.empty(),
                    "PRETENSION SECTION: name must not be empty");
     const bool duplicate_name = std::any_of(
@@ -208,11 +209,16 @@ void Model::add_pretension_section(
                    "PRETENSION SECTION: axis must not be zero");
     logging::error(position == "MIDDLE",
                    "PRETENSION SECTION: only POSITION=MIDDLE is supported yet");
+    logging::error(snap_ratio >= Precision(0),
+                   "PRETENSION SECTION: SNAP must not be negative");
+    logging::error(snap_ratio <= Precision(0.1),
+                   "PRETENSION SECTION: SNAP must not exceed 0.1");
 
     auto section = std::make_shared<pretension::PretensionSection>();
     section->name = name;
     section->cylinder_surface_set = surface_set;
     section->axis_direction = axis.normalized();
+    section->snap_ratio = snap_ratio;
     Vec3 surface_center = Vec3::Zero();
     Precision minimum_axis_coordinate = std::numeric_limits<Precision>::max();
     Precision maximum_axis_coordinate = std::numeric_limits<Precision>::lowest();

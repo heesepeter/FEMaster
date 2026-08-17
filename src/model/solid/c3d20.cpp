@@ -69,7 +69,7 @@ SurfacePtr C3D20::surface(ID surface_id) {
                                                                  node_ids[4],
                                                                  node_ids[7],
                                                                  node_ids[11],
-                                                                 node_ids[12],
+                                                                 node_ids[16],
                                                                  node_ids[15],
                                                                  node_ids[19]});
         default: return nullptr;    // Invalid surface ID

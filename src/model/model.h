@@ -103,7 +103,8 @@ struct Model {
       const std::string& name,
       const std::string& surface_set,
       Vec3 axis,
-      const std::string& position);
+      const std::string& position,
+      Precision snap_ratio = Precision(0.02));
 
     void prepare_pretension_sections();
 

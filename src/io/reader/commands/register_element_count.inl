@@ -28,7 +28,7 @@ inline void register_element_count(fem::io::dsl::Registry& registry, ElementCoun
                     .required()
                     .doc("Element topology/type")
                     .allowed({
-                        "C3D4", "C3D5", "C3D6", "C3D8", "C3D8R", "C3D10", "C3D15", "C3D20", "C3D20R",
+                        "C3D4", "C3D5", "C3D6", "C3D8", "C3D8R", "C3D10", "C3D13", "C3D15", "C3D20", "C3D20R",
                         "B33", "T3",
                         "S3", "S4", "MITC4", "S6", "S8", "MITC8", "QSPT",
                         "MITC3FRT", "MITC4FRT", "MITC6FRT", "MITC8FRT"
@@ -56,6 +56,7 @@ inline void register_element_count(fem::io::dsl::Registry& registry, ElementCoun
         FEM_ADD_ELEMENT_COUNT_VARIANT("C3D8", 8, "C3D8 connectivity (8 nodes)");
         FEM_ADD_ELEMENT_COUNT_VARIANT("C3D8R", 8, "C3D8R connectivity (8 nodes)");
         FEM_ADD_ELEMENT_COUNT_VARIANT("C3D10", 10, "C3D10 connectivity (10 nodes)");
+        FEM_ADD_ELEMENT_COUNT_VARIANT("C3D13", 13, "C3D13 connectivity (13 nodes)");
         FEM_ADD_ELEMENT_COUNT_VARIANT("C3D15", 15, "C3D15 connectivity (15 nodes)");
         FEM_ADD_ELEMENT_COUNT_VARIANT("C3D20", 20, "C3D20 connectivity (20 nodes)");
         FEM_ADD_ELEMENT_COUNT_VARIANT("C3D20R", 20, "C3D20R connectivity (20 nodes)");

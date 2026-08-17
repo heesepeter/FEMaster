@@ -11,7 +11,68 @@
 namespace fem {
 namespace constraint {
 
+namespace {
+
+Index remove_redundant_lagrange_rows(ConstraintSystem& system) {
+    if (system.equations == 0) return 0;
+
+    const SparseMatrix transpose = system.C.transpose();
+    Eigen::SparseQR<SparseMatrix, Eigen::COLAMDOrdering<int>> qr{};
+    qr.compute(transpose);
+    logging::error(qr.info() == Eigen::Success,
+                   "[Lagrange] QR(C^T) rank analysis failed");
+    const Index rank = static_cast<Index>(qr.rank());
+    if (rank == system.equations) return 0;
+
+    std::vector<Index> retained;
+    retained.reserve(static_cast<std::size_t>(rank));
+    const auto permutation = qr.colsPermutation().indices();
+    for (Index i = 0; i < rank; ++i) {
+        retained.push_back(static_cast<Index>(permutation[i]));
+    }
+    std::sort(retained.begin(), retained.end());
+
+    std::vector<Index> new_row(
+        static_cast<std::size_t>(system.equations), Index(-1));
+    for (Index row = 0; row < rank; ++row) {
+        new_row[static_cast<std::size_t>(retained[static_cast<std::size_t>(row)])] = row;
+    }
+    TripletList entries;
+    entries.reserve(static_cast<std::size_t>(system.C.nonZeros()));
+    for (int column = 0; column < system.C.outerSize(); ++column) {
+        for (SparseMatrix::InnerIterator entry(system.C, column); entry; ++entry) {
+            const Index row = new_row[static_cast<std::size_t>(entry.row())];
+            if (row >= 0) entries.emplace_back(row, column, entry.value());
+        }
+    }
+
+    SparseMatrix reduced(rank, system.dofs);
+    reduced.setFromTriplets(entries.begin(), entries.end());
+    reduced.makeCompressed();
+    DynamicVector rhs(rank);
+    std::vector<EquationSourceKind> sources;
+    sources.reserve(static_cast<std::size_t>(rank));
+    for (Index row = 0; row < rank; ++row) {
+        const Index old_row = retained[static_cast<std::size_t>(row)];
+        rhs[row] = system.d[old_row];
+        sources.push_back(system.row_sources[static_cast<std::size_t>(old_row)]);
+    }
+
+    const Index removed = system.equations - rank;
+    system.equations = rank;
+    system.C = std::move(reduced);
+    system.d = std::move(rhs);
+    system.row_sources = std::move(sources);
+    logging::warning(false,
+                     "[Lagrange] removed ", removed,
+                     " linearly dependent constraint row(s); retained rank ", rank);
+    return removed;
+}
+
+} // namespace
+
 void ConstraintTransformer::initialize_lagrange() {
+    const Index redundant_rows = remove_redundant_lagrange_rows(system_);
     DynamicVector row_norm_squared = DynamicVector::Zero(system_.equations);
     for (int column = 0; column < system_.C.outerSize(); ++column) {
         for (SparseMatrix::InnerIterator entry(system_.C, column); entry; ++entry) {
@@ -34,7 +95,9 @@ void ConstraintTransformer::initialize_lagrange() {
     report_.homogeneous  = system_.d.size() == 0 ||
                            system_.d.lpNorm<Eigen::Infinity>() == Precision(0);
     report_.feasible     = true;
-    report_.rank_known   = false;
+    report_.rank         = system_.equations;
+    report_.rank_known   = redundant_rows > 0;
+    report_.redundant_rows = redundant_rows;
 }
 
 DynamicVector ConstraintTransformer::scale_lagrange_rows(const DynamicVector& values) const {

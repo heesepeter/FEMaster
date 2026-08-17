@@ -42,12 +42,15 @@ struct PretensionSection {
     Vec3 axis_origin = Vec3::Zero();
     Vec3 axis_direction = Vec3::UnitX();
     Precision cut_coordinate = 0;
+    Precision snap_ratio = Precision(0.02);
 
     std::vector<ID> side_a_nodes;
     std::vector<ID> side_b_nodes;
     std::vector<InterfacePair> interface_pairs;
     std::map<std::array<long long, 3>, InterfacePair> interface_node_cache;
     std::vector<ID> cut_element_ids;
+    std::map<ID, ID> cut_quality_origins;
+    std::map<ID, std::string> cut_quality_types;
     std::vector<CutFacet> facets;
 
     Control control = Control::Displacement;

@@ -471,6 +471,17 @@ add_custom_command(TARGET FEMaster POST_BUILD
         COMMENT "Copying license and third-party notice files"
 )
 
+add_custom_target(pretension-regression
+        COMMAND ${CMAKE_COMMAND}
+                -DFEMASTER_EXECUTABLE=$<TARGET_FILE:FEMaster>
+                -DFEMASTER_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DFEMASTER_MATRIX_DIR=${CMAKE_CURRENT_BINARY_DIR}/pretension_matrix
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_pretension_matrix.cmake
+        DEPENDS FEMaster
+        USES_TERMINAL
+        COMMENT "Running pretension axis and element-ID regression matrix"
+)
+
 if(FEMASTER_IOMP5_DLL)
     add_custom_command(TARGET FEMaster POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -515,6 +526,14 @@ if(FEMASTER_BUILD_TESTS)
 
     include(GoogleTest)
     gtest_discover_tests(FEMaster_test)
+
+    add_test(NAME Pretension_MixedHex_Matrix
+            COMMAND ${CMAKE_COMMAND}
+                    -DFEMASTER_EXECUTABLE=$<TARGET_FILE:FEMaster>
+                    -DFEMASTER_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                    -DFEMASTER_MATRIX_DIR=${CMAKE_CURRENT_BINARY_DIR}/pretension_matrix_ctest
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_pretension_matrix.cmake
+    )
 endif()
 
 # -----------------------------------------------------------------------------
