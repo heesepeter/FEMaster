@@ -306,6 +306,7 @@ void LinearStatic::run() {
         "writing result fields");
 
     transformer->post_check_static(K, f, q);
+    model->capture_pretension_gaps(global_disp_mat);
     model->step_end();
 }
 } // namespace loadcase

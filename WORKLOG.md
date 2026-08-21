@@ -641,6 +641,75 @@ Als allgemeine Absicherung sind Interface-Paare nun global kanonisch orientiert
 Solver, dass jedes Interface-Paar auf beiden Seiten von Elementen verwendet
 wird und kein einzelnes Element beide Interface-Seiten verbindet.
 
+## Pretension auf vorhandenem Kreisflächenpaar
+
+Neben der automatischen Schnitterzeugung über eine Zylinderfläche kann eine
+Pretension-Sektion jetzt direkt aus zwei vorhandenen, positionsgleichen
+Kreisflächen aufgebaut werden:
+
+```text
+*PRETENSIONSECTION, NAME=PT1, SURFACE_A=CUT_FACE_A, SURFACE_B=CUT_FACE_B
+```
+
+Dieser Modus benötigt keine Achszeile. Die Flächen müssen dieselbe Knotenzahl
+besitzen; ihre Knoten werden über die globale Position innerhalb einer
+skalierungsabhängigen Toleranz eindeutig gepaart. Bei bereits getrennten
+Flächen werden die vorhandenen Knoten unmittelbar als Interface-Paare
+verwendet. Teilen beide Flächen dieselben Knoten, wird die zu `SURFACE_B`
+gehörende Elementkomponente ohne Traversierung über die Interface-Knoten
+ermittelt. Die gemeinsamen Knoten werden dupliziert und nur in dieser
+B-Komponente sowie ihren Surface-Definitionen ersetzt.
+
+Surface-Objekte speichern dazu jetzt ihre erzeugende Element-ID und lokale
+Flächen-ID. Dadurch bleibt die B-Seite auch bei identischer Knotenreihenfolge
+zweier angrenzender Hexaeder eindeutig. Die Schnittachse folgt bei getrennten
+Flächen der Verbindung von A- zu B-Flächenzentrum; bei zusammenfallenden
+Flächen wird sie aus der Normalen von `SURFACE_A` bestimmt.
+
+Regressionen:
+
+- `examples/42_pretension_face_pair`: bereits getrennte Flächen, 4 direkte Paare
+- `examples/43_pretension_merged_face_pair`: gemergte Flächen, 4 automatisch
+  duplizierte Knoten
+- beide Fälle bestehen Lagrange-Gleichgewichts- und Constraintcheck
+
+## Pretension über mehrere Loadcases
+
+`*PRETENSION` kann innerhalb eines `*LOADCASE` stehen. Damit lassen sich
+absolute Pretension-Vorgaben schrittweise ändern und anschließend sperren:
+
+```text
+*LOADCASE, TYPE=LINEARSTATIC, NAME=PRETENSION_SMALL
+*PRETENSION, SECTION=PT1, ACTION=LOAD, CONTROL=DISPLACEMENT, VALUE=0.02
+...
+*END
+*LOADCASE, TYPE=LINEARSTATIC, NAME=PRETENSION_LARGE
+*PRETENSION, SECTION=PT1, ACTION=LOAD, CONTROL=DISPLACEMENT, VALUE=0.05
+...
+*END
+*LOADCASE, TYPE=LINEARSTATIC, NAME=PRETENSION_LOCK
+*PRETENSION, SECTION=PT1, ACTION=LOCK
+...
+*END
+```
+
+Die Werte sind absolute Vorgaben. Nach `ACTION=LOCK` bleibt der gesperrte
+Gap auch in späteren Loadcases ohne weitere Pretension-Anweisung aktiv.
+
+Für `CONTROL=FORCE` wird nach dem Lösen der mittlere axiale Gap aller
+Interface-Paare gespeichert. Ein nachfolgendes `ACTION=LOCK` übernimmt diesen
+tatsächlich gelösten Wert und wechselt die Section auf eine displacement-
+basierte Sperre. Ein Lock vor dem ersten erfolgreich gelösten Kraft-Loadcase
+wird mit einer eindeutigen Fehlermeldung abgewiesen.
+
+Regressionen:
+
+- `examples/44_pretension_loadsteps`: `0.02 -> 0.05 -> LOCK`, danach bleibt
+  der Gap bei `0.05`.
+- `examples/45_pretension_force_lock`: Kraftsteuerung, Übernahme des gelösten
+  Gaps in `LOCK` und Erhalt im folgenden Loadcase.
+- Target `pretension-loadstep-regression` und CTest `Pretension_Loadsteps`.
+
 ## Noch offene Aufgaben
 
 Die früher hier aufgeführten C3D4-Qualitätsmetriken, das Near-Node-Snapping,

@@ -64,6 +64,10 @@ inline void Model::set_surface(ID id, ID element_id, ID surface_id) {
     if (id >= _data->max_surfaces) {
         _data->max_surfaces = id + 1;
         _data->surfaces.resize(static_cast<std::size_t>(_data->max_surfaces));
+        _data->surface_element_ids.resize(
+            static_cast<std::size_t>(_data->max_surfaces), ID(-1));
+        _data->surface_local_ids.resize(
+            static_cast<std::size_t>(_data->max_surfaces), ID(-1));
     }
 
     auto& elptr = _data->elements[element_id];
@@ -82,11 +86,15 @@ inline void Model::set_surface(ID id, ID element_id, ID surface_id) {
             surf_id = _data->surfaces.size();
             _data->surfaces.reserve(surf_id + 128);
             _data->surfaces.resize(surf_id + 1);
+            _data->surface_element_ids.resize(surf_id + 1, ID(-1));
+            _data->surface_local_ids.resize(surf_id + 1, ID(-1));
             _data->max_surfaces = static_cast<ID>(_data->surfaces.size());
         }
         logging::error(_data->surfaces[surf_id] == nullptr, "surface with id=", id, " has already been defined");
 
         _data->surfaces[surf_id] = surfptr;
+        _data->surface_element_ids[surf_id] = element_id;
+        _data->surface_local_ids[surf_id] = surface_id;
         _data->surface_sets.add(surf_id);
     }
 

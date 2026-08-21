@@ -217,6 +217,13 @@
         "type": "equals",
         "lhs": "${hostSystemName}",
         "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
+        "EIGEN3_INCLUDE_DIR": "/opt/homebrew/opt/eigen@3/include/eigen3",
+        "SPECTRA_INCLUDE_DIR": "/opt/homebrew/opt/spectra/include",
+        "ARGPARSE_INCLUDE_DIR": "/opt/homebrew/opt/argparse/include"
       }
     },
     {

@@ -106,6 +106,11 @@ struct Model {
       const std::string& position,
       Precision snap_ratio = Precision(0.02));
 
+    void add_pretension_interface_section(
+      const std::string& name,
+      const std::string& surface_set_a,
+      const std::string& surface_set_b);
+
     void prepare_pretension_sections();
 
     void set_pretension_load(
@@ -195,6 +200,7 @@ struct Model {
     Field                 build_load_matrix(std::vector<std::string> load_sets = {}, Precision time = 0);
     Field                 build_pretension_force_matrix();
     Field                 build_pretension_gap_matrix(const Field& displacement);
+    void                  capture_pretension_gaps(const Field& displacement);
     std::vector<std::pair<bc::Amplitude::Ptr, Field>> build_load_basis(std::vector<std::string> load_sets = {});
     constraint::ConstraintGroups collect_constraints(SystemDofIds& system_dof_ids, const std::vector<std::string>& supp_sets = {});
     constraint::Equations build_constraints(SystemDofIds& system_dof_ids, std::vector<std::string> supp_sets = {});

@@ -38,6 +38,8 @@ struct PretensionSection {
     std::string name;
 
     std::string cylinder_surface_set;
+    std::string interface_surface_set_a;
+    std::string interface_surface_set_b;
 
     Vec3 axis_origin = Vec3::Zero();
     Vec3 axis_direction = Vec3::UnitX();
@@ -58,8 +60,15 @@ struct PretensionSection {
 
     Precision prescribed_value = 0;
     Precision locked_gap = 0;
+    Precision last_solved_gap = 0;
+    bool has_solved_gap = false;
 
     bool prepared = false;
+
+    bool uses_surface_pair() const {
+        return !interface_surface_set_a.empty() &&
+               !interface_surface_set_b.empty();
+    }
 };
 
 }

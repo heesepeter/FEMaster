@@ -22,7 +22,7 @@ inline void register_pretension_section(
     registry.command("PRETENSIONSECTION", [&](fem::io::dsl::Command& command) {
         command.allow_if(fem::io::dsl::Condition::parent_is("ROOT"));
         command.doc(
-            "Define a pretension section by a cylindrical surface, axis and cut position.");
+            "Define a pretension section by a cylindrical surface or by two circle faces.");
 
         command.keyword(
             fem::io::dsl::KeywordSpec::make()
@@ -30,8 +30,14 @@ inline void register_pretension_section(
                     .required()
                     .doc("Pretension section name")
                 .key("SURFACE")
-                    .required()
+                    .optional("")
                     .doc("Selected cylindrical surface set")
+                .key("SURFACE_A")
+                    .optional("")
+                    .doc("First face of an existing circular cut")
+                .key("SURFACE_B")
+                    .optional("")
+                    .doc("Second face of an existing circular cut")
                 .key("POSITION")
                     .optional("MIDDLE")
                     .allowed({"MIDDLE"})
@@ -42,19 +48,37 @@ inline void register_pretension_section(
 
         auto name = std::make_shared<std::string>();
         auto surface = std::make_shared<std::string>();
+        auto surface_a = std::make_shared<std::string>();
+        auto surface_b = std::make_shared<std::string>();
         auto position = std::make_shared<std::string>();
 
         auto snap_ratio = std::make_shared<fem::Precision>(fem::Precision(0.02));
 
-        command.on_enter([name, surface, position, snap_ratio](const fem::io::dsl::Keys& keys) {
+        command.on_enter([name, surface, surface_a, surface_b, position, snap_ratio](const fem::io::dsl::Keys& keys) {
             *name = keys.raw("NAME");
             *surface = keys.raw("SURFACE");
+            *surface_a = keys.raw("SURFACE_A");
+            *surface_b = keys.raw("SURFACE_B");
             *position = keys.raw("POSITION");
             *snap_ratio = keys.get<fem::Precision>("SNAP");
+            const bool cylinder_mode = !surface->empty();
+            const bool pair_mode = !surface_a->empty() || !surface_b->empty();
+            fem::logging::error(cylinder_mode != pair_mode,
+                                "PRETENSIONSECTION requires either SURFACE or SURFACE_A/SURFACE_B");
+            fem::logging::error(!pair_mode ||
+                                    (!surface_a->empty() && !surface_b->empty()),
+                                "PRETENSIONSECTION requires both SURFACE_A and SURFACE_B");
+        });
+
+        command.on_exit([&model, name, surface_a, surface_b](const fem::io::dsl::Keys&) {
+            if (!surface_a->empty() || !surface_b->empty()) {
+                model.add_pretension_interface_section(*name, *surface_a, *surface_b);
+            }
         });
 
         command.variant(
             fem::io::dsl::Variant::make()
+                .when(fem::io::dsl::Condition::key_present("SURFACE"))
                 .segment(fem::io::dsl::Segment::make()
                     .range(fem::io::dsl::LineRange{}.min(1).max(1))
                     .pattern(fem::io::dsl::Pattern::make()
@@ -70,6 +94,9 @@ inline void register_pretension_section(
                             *position,
                             *snap_ratio);
                     })));
+        command.variant(
+            fem::io::dsl::Variant::make()
+                .when(fem::io::dsl::Condition::key_present("SURFACE_A")));
     });
 }
 
@@ -82,12 +109,19 @@ inline void register_pretension_section_count(
         command.keyword(
             fem::io::dsl::KeywordSpec::make()
                 .key("NAME").required()
-                .key("SURFACE").required()
+                .key("SURFACE").optional("")
+                .key("SURFACE_A").optional("")
+                .key("SURFACE_B").optional("")
                 .key("POSITION").optional("MIDDLE")
                 .key("SNAP").optional("0.02"));
 
+        command.on_exit([sink](const fem::io::dsl::Keys& keys) {
+            if (!keys.raw("SURFACE_A").empty()) sink();
+        });
+
         command.variant(
             fem::io::dsl::Variant::make()
+                .when(fem::io::dsl::Condition::key_present("SURFACE"))
                 .segment(fem::io::dsl::Segment::make()
                     .range(fem::io::dsl::LineRange{}.min(1).max(1))
                     .pattern(fem::io::dsl::Pattern::make()
@@ -96,6 +130,9 @@ inline void register_pretension_section_count(
                     .bind([sink](const std::array<fem::Precision, 3>&) {
                         sink();
                     })));
+        command.variant(
+            fem::io::dsl::Variant::make()
+                .when(fem::io::dsl::Condition::key_present("SURFACE_A")));
     });
 }
 

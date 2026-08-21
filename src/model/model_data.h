@@ -82,6 +82,8 @@ struct ModelData {
     // Geometric entities -------------------------------------------------------
     std::vector<ElementPtr> elements;
     std::vector<SurfacePtr> surfaces;
+    std::vector<ID>         surface_element_ids;
+    std::vector<ID>         surface_local_ids;
     std::vector<LinePtr>    lines;
 
     // Dynamic topology insertion -----------------------------------------------
@@ -144,6 +146,8 @@ struct ModelData {
           max_material_points(max_integration_points) {
         elements.resize(max_elems);
         surfaces.resize(max_surfaces);
+        surface_element_ids.resize(max_surfaces, ID(-1));
+        surface_local_ids.resize(max_surfaces, ID(-1));
 
         element_nodal_offsets = nullptr;
         element_ip_offsets    = nullptr;

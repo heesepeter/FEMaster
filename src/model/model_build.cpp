@@ -361,6 +361,40 @@ Field Model::build_pretension_gap_matrix(const Field& displacement) {
     return gap_matrix;
 }
 
+void Model::capture_pretension_gaps(const Field& displacement) {
+    logging::error(displacement.domain == FieldDomain::NODE && displacement.components >= 3,
+                   "Capturing pretension gaps requires a nodal displacement field");
+    for (const auto& section : this->_data->pretension_sections) {
+        if (!section || section->state == pretension::State::Open ||
+            section->interface_pairs.empty()) continue;
+
+        const Precision axis_norm = section->axis_direction.norm();
+        logging::error(axis_norm > Precision(0),
+                       "Pretension section '", section->name,
+                       "' has a zero axis direction");
+        const Vec3 axis = section->axis_direction / axis_norm;
+        Precision gap_sum = 0;
+        Index gap_count = 0;
+        for (const auto& pair : section->interface_pairs) {
+            if (pair.side_a < 0 || pair.side_b < 0 ||
+                pair.side_a >= static_cast<ID>(displacement.rows) ||
+                pair.side_b >= static_cast<ID>(displacement.rows)) continue;
+            const Vec3 relative =
+                displacement.row_vec3(static_cast<Index>(pair.side_b)) -
+                displacement.row_vec3(static_cast<Index>(pair.side_a));
+            gap_sum += axis.dot(relative);
+            ++gap_count;
+        }
+        logging::error(gap_count > 0,
+                       "Pretension section '", section->name,
+                       "' has no valid interface pair for gap capture");
+        section->last_solved_gap = gap_sum / static_cast<Precision>(gap_count);
+        section->has_solved_gap = true;
+        logging::info(true, "PRETENSION '", section->name,
+                      "': solved mean gap = ", section->last_solved_gap);
+    }
+}
+
 Field Model::build_load_matrix(std::vector<std::string> load_sets, Precision time) {
     Field load_matrix{"LOAD_MATRIX", FieldDomain::NODE, static_cast<Index>(this->_data->max_nodes), 6};
     load_matrix.set_zero();

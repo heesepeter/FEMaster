@@ -482,6 +482,17 @@ add_custom_target(pretension-regression
         COMMENT "Running pretension axis and element-ID regression matrix"
 )
 
+add_custom_target(pretension-loadstep-regression
+        COMMAND ${CMAKE_COMMAND}
+                -DFEMASTER_EXECUTABLE=$<TARGET_FILE:FEMaster>
+                -DFEMASTER_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DFEMASTER_LOADSTEP_DIR=${CMAKE_CURRENT_BINARY_DIR}/pretension_loadsteps
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_pretension_loadsteps.cmake
+        DEPENDS FEMaster
+        USES_TERMINAL
+        COMMENT "Running pretension loadstep and force-lock regressions"
+)
+
 if(FEMASTER_IOMP5_DLL)
     add_custom_command(TARGET FEMaster POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -533,6 +544,13 @@ if(FEMASTER_BUILD_TESTS)
                     -DFEMASTER_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
                     -DFEMASTER_MATRIX_DIR=${CMAKE_CURRENT_BINARY_DIR}/pretension_matrix_ctest
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_pretension_matrix.cmake
+    )
+    add_test(NAME Pretension_Loadsteps
+            COMMAND ${CMAKE_COMMAND}
+                    -DFEMASTER_EXECUTABLE=$<TARGET_FILE:FEMaster>
+                    -DFEMASTER_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                    -DFEMASTER_LOADSTEP_DIR=${CMAKE_CURRENT_BINARY_DIR}/pretension_loadsteps_ctest
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_pretension_loadsteps.cmake
     )
 endif()
 
