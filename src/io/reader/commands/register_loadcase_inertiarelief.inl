@@ -1,10 +1,24 @@
-// register_loadcase_inertiarelief.inl — registers INERTIARELIEF within *LOADCASE (LinearStatic only)
-
-#include <stdexcept>
+/**
+ * @file register_loadcase_inertiarelief.inl
+ * @brief Registers inertia-relief settings for linear static load cases.
+ *
+ * `INERTIARELIEF` enables rigid-body force and moment balancing on the active
+ * `LinearStatic` analysis. The optional `CONSIDER_POINT_MASSES` setting controls
+ * whether concentrated mass features participate in the mass, inertia and
+ * compensating-load calculation.
+ *
+ * The command only configures the analysis. Construction of the balancing
+ * inertial load remains the responsibility of the linear static solver.
+ * Derived linear-static formulations inherit the same setting.
+ *
+ * @author Finn Eggers
+ * @date 19.08.2026
+ */
 
 #include "../parser.h"
 
 #include "../../dsl/keyword.h"
+#include "../../../core/logging.h"
 #include "../../../loadcase/linear_static.h"
 
 namespace fem::io::reader::commands {
@@ -24,15 +38,14 @@ inline void register_loadcase_inertiarelief(fem::io::dsl::Registry& registry, Pa
 
         command.on_enter([&parser](const fem::io::dsl::Keys& keys) {
             auto* base = parser.active_loadcase();
-            if (!base) {
-                throw std::runtime_error("INERTIARELIEF must appear inside *LOADCASE");
-            }
-            if (auto* lc = dynamic_cast<loadcase::LinearStatic*>(base)) {
-                lc->inertia_relief = true;
-                lc->inertia_relief_consider_point_masses = keys.get<bool>("CONSIDER_POINT_MASSES");
-                return;
-            }
-            throw std::runtime_error("INERTIARELIEF is only supported for LINEARSTATIC load cases");
+            logging::error(base != nullptr,
+                "INERTIARELIEF must appear inside *LOADCASE");
+
+            auto* lc = dynamic_cast<loadcase::LinearStatic*>(base);
+            logging::error(lc != nullptr,
+                "INERTIARELIEF is only supported for LINEARSTATIC load cases");
+            lc->inertia_relief = true;
+            lc->inertia_relief_consider_point_masses = keys.get<bool>("CONSIDER_POINT_MASSES");
         });
 
         command.variant(fem::io::dsl::Variant::make());

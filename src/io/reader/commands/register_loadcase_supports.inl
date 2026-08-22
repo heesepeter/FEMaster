@@ -1,17 +1,33 @@
-// register_loadcase_supports.inl — registers SUPPORTS within *LOADCASE
+/**
+ * @file register_loadcase_supports.inl
+ * @brief Registers support and constraint collectors for active load cases.
+ *
+ * The `SUPPORTS` child command appends non-empty collector names to every
+ * supported structural analysis, including static, buckling, eigenfrequency,
+ * transient, harmonic and nonlinear formulations. Input order is retained so
+ * downstream constraint construction remains deterministic.
+ *
+ * Resolution of support, tie and coupling collectors and construction of the
+ * resulting constraint equations remain responsibilities of the load case and
+ * model constraint subsystem.
+ *
+ * @author Finn Eggers
+ * @date 19.08.2026
+ */
 
 #include <array>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "../parser.h"
 
+#include "../../../core/logging.h"
 #include "../../../loadcase/linear_buckling.h"
 #include "../../../loadcase/linear_eigenfreq.h"
 #include "../../../loadcase/linear_harmonic.h"
 #include "../../../loadcase/linear_static.h"
 #include "../../../loadcase/linear_static_topo.h"
+#include "../../../loadcase/linear_transient.h"
 #include "../../../loadcase/nonlinear_static.h"
 
 namespace fem::io::reader::commands {
@@ -34,11 +50,10 @@ inline void register_loadcase_supports(fem::io::dsl::Registry& registry, Parser&
                     .fixed<std::string, 16>().name("SUPP").desc("Support collector names")
                         .on_missing(std::string{}).on_empty(std::string{})
                 )
-                .bind([&parser, &append_tokens](const std::array<std::string, 16>& names) {
+                .bind([&parser, append_tokens](const std::array<std::string, 16>& names) {
                     auto* base = parser.active_loadcase();
-                    if (!base) {
-                        throw std::runtime_error("SUPPORTS must appear inside *LOADCASE");
-                    }
+                    logging::error(base != nullptr,
+                        "SUPPORTS must appear inside *LOADCASE");
 
                     if (auto* lc = dynamic_cast<loadcase::LinearBuckling*>(base)) {
                         append_tokens(names, lc->supps);
@@ -69,7 +84,8 @@ inline void register_loadcase_supports(fem::io::dsl::Registry& registry, Parser&
                         return;
                     }
 
-                    throw std::runtime_error("SUPPORTS not supported for loadcase type " + parser.active_loadcase_type());
+                    logging::error(false,
+                        "SUPPORTS not supported for loadcase type ", base->type_name());
                 })
             )
         );

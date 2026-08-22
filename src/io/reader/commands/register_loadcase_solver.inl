@@ -1,10 +1,24 @@
-// register_loadcase_solver.inl — registers SOLVER within *LOADCASE
+/**
+ * @file register_loadcase_solver.inl
+ * @brief Registers solver device and algorithm selection for load cases.
+ *
+ * `SOLVER` maps deck-level `DEVICE` and `METHOD` tokens to FEMaster's sparse
+ * solver enums and applies them to each supported active analysis. The command
+ * covers CPU/GPU placement and direct/iterative solution selection while the
+ * concrete solver layer enforces backend-specific compatibility.
+ *
+ * The embedded command documentation retains the compatibility matrix for
+ * constraint methods and available numerical backends.
+ *
+ * @author Finn Eggers
+ * @date 19.08.2026
+ */
 
-#include <stdexcept>
 #include <string>
 
 #include "../parser.h"
 
+#include "../../../core/logging.h"
 #include "../../../loadcase/linear_buckling.h"
 #include "../../../loadcase/linear_harmonic.h"
 #include "../../../loadcase/linear_static.h"
@@ -39,7 +53,8 @@ inline void register_loadcase_solver(fem::io::dsl::Registry& registry, Parser& p
 
         command.on_enter([&parser](const fem::io::dsl::Keys& keys) {
             auto* base = parser.active_loadcase();
-            logging::error(base != nullptr, "SOLVER must appear inside *LOADCASE");
+            logging::error(base != nullptr,
+                "SOLVER must appear inside *LOADCASE");
 
             const auto device = keys.raw("DEVICE");
             const auto method = keys.raw("METHOD");
@@ -58,7 +73,8 @@ inline void register_loadcase_solver(fem::io::dsl::Registry& registry, Parser& p
             if (configure(dynamic_cast<loadcase::LinearHarmonic*>(base))) return;
             if (configure(dynamic_cast<loadcase::Transient*>(base))) return;
 
-            throw std::runtime_error("SOLVER not supported for loadcase type " + parser.active_loadcase_type());
+            logging::error(false,
+                "SOLVER not supported for loadcase type ", base->type_name());
         });
 
         command.variant(fem::io::dsl::Variant::make());

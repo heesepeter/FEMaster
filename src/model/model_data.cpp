@@ -1,207 +1,205 @@
 /**
  * @file model_data.cpp
- * @brief Implements model field allocation and element-local enumeration.
+ * @brief Implements field sizing and element-local enumeration.
  *
- * `ModelData` derives dense model-field row counts from the active model
- * domains and enumerates element-nodal, integration-point and material-point
- * offsets. Material-point enumeration also creates the always-bound default
- * `MATERIAL_STATE` field used by direct element-to-material state addressing;
- * nonlinear analyses may temporarily replace this binding with their active
- * trial buffer.
+ * The implementation derives storage dimensions from compiled assembly data,
+ * constructs prefix offsets for variable-size element domains, manages named and
+ * temporary fields and projects element-nodal results onto unique global nodes.
+ *
+ * Element formulations own the number and ordering of their local nodes,
+ * integration points and material points. `ModelData` concatenates those local
+ * ranges into model-wide fields and records the start offset on every element.
  *
  * @see ModelData
  * @see Field
+ * @see ElementInterface
  *
  * @author Finn Eggers
- * @date 07.08.2026
+ * @date 19.08.2026
  */
 
 #include "model_data.h"
 #include "element/element.h"
+#include "model.h"
 
-namespace fem {
-namespace model {
+#include <algorithm>
+
+namespace fem::model {
 
 ID ModelData::append_node(const Vec3& position) {
-    logging::error(positions != nullptr,
-                   "ModelData: cannot append a node before POSITION has been initialized");
-    logging::error(positions_reference != nullptr,
-                   "ModelData: cannot append a node before POSITION_REFERENCE has been initialized");
-    logging::error(node_sets.has_all() && node_sets.all() != nullptr,
-                   "ModelData: global node set is not initialized");
+    logging::error(compiled && positions != nullptr && positions_reference != nullptr,
+        "ModelData: pretension nodes require compiled position fields");
 
-    const auto all_nodes = node_sets.all();
-    const ID node_id = all_nodes->size() == 0 ? ID(0) : all_nodes->last() + ID(1);
-
-    logging::error(node_id >= ID(0) && node_id < max_nodes,
-                   "ModelData: node capacity exhausted while appending node ", node_id,
-                   " (capacity: ", max_nodes, ")");
-
-    const Index row = static_cast<Index>(node_id);
-    for (Index component = 0; component < 3; ++component) {
-        (*positions)(row, component) = position(component);
-        (*positions_reference)(row, component) = position(component);
+    const ID node_id = static_cast<ID>(positions->rows);
+    const Index new_rows = positions->rows + 1;
+    positions->resize_rows(new_rows);
+    positions_reference->resize_rows(new_rows);
+    for (Dim component = 0; component < 3; ++component) {
+        (*positions)(static_cast<Index>(node_id), component) = position(component);
+        (*positions_reference)(static_cast<Index>(node_id), component) = position(component);
     }
+    node_sets.all()->add(node_id);
 
-    // Appended interface nodes belong to the global node set only. Do not use
-    // Sets::add() here because an input NSET may still be active while the
-    // topology is being split.
-    if (node_sets.has_all() && node_sets.all() != nullptr) {
-        node_sets.all()->add(node_id);
+    const auto default_instance = instances.get(Model::DEFAULT_INSTANCE_NAME);
+    logging::error(default_instance != nullptr,
+        "ModelData: default instance missing for generated pretension node");
+    ID local_id = node_id;
+    for (const auto& [instance, existing_local] : node_mapping) {
+        if (instance == default_instance) {
+            local_id = std::max(local_id, static_cast<ID>(existing_local + Index(1)));
+        }
     }
+    logging::error(local_id < ID(100000000),
+        "ModelData: generated pretension node exceeds result-id range");
+    node_mapping.emplace_back(default_instance, local_id);
     return node_id;
 }
 
 ID ModelData::next_free_element_id() const {
-    for (ID element_id = 0; element_id < max_elems; ++element_id) {
-        if (elements[static_cast<std::size_t>(element_id)] == nullptr) {
-            return element_id;
-        }
-    }
-
-    logging::error(false,
-                   "ModelData: element capacity exhausted while inserting a new element");
-    return ID(-1);
+    return static_cast<ID>(elements.size());
 }
 
 void ModelData::insert_element(ElementPtr element) {
     logging::error(element != nullptr,
-                   "ModelData: cannot insert a null element");
-
-    const ID element_id = element->elem_id;
-    logging::error(element_id >= 0 && element_id < max_elems,
-                   "ModelData: element id ", element_id,
-                   " is outside the allocated element capacity ", max_elems);
-    logging::error(elements[static_cast<std::size_t>(element_id)] == nullptr,
-                   "ModelData: element slot ", element_id,
-                   " is already occupied");
-
+        "ModelData: cannot insert a null pretension element");
+    const ID element_id = static_cast<ID>(elements.size());
+    logging::error(element->elem_id == element_id,
+        "ModelData: generated element id ", element->elem_id,
+        " is not the next dense id ", element_id);
     element->_model_data = this;
-    elements[static_cast<std::size_t>(element_id)] = std::move(element);
+    elements.push_back(std::move(element));
+    elem_sets.all()->add(element_id);
 
-    if (elem_sets.has_all() && elem_sets.all() != nullptr) {
-        elem_sets.all()->add(element_id);
+    const auto default_instance = instances.get(Model::DEFAULT_INSTANCE_NAME);
+    logging::error(default_instance != nullptr,
+        "ModelData: default instance missing for generated pretension element");
+    ID local_id = element_id;
+    for (const auto& [existing_local, global_id] : default_instance->element_ids) {
+        (void) global_id;
+        local_id = std::max(local_id, existing_local + ID(1));
     }
+    default_instance->element_ids.emplace(local_id, element_id);
 }
 
 /**
- * Returns the dense row count associated with one field domain.
+ * Determines the number of rows required by one model field domain.
  *
- * Node and element domains use their fixed model capacities. Flattened element-
- * nodal, integration-point and material-point domains use the sentinel entry of
- * their prefix-offset field and are therefore unavailable before topology
- * enumeration. Unknown domains and empty offset-dependent domains are rejected.
+ * Node and element domains derive directly from dense assembly storage.
+ * Element-nodal, integration-point and material-point domains use the terminal
+ * value of their compiled prefix-offset field, which equals the sum of the
+ * corresponding local counts over all elements.
  *
- * @param domain Semantic field domain whose row count is requested.
- * @return Number of rows required by a field in that domain.
+ * Variable-size element domains therefore require
+ * `initialize_element_enumeration()` to have completed. The unknown domain is
+ * not allocatable and is rejected explicitly.
+ *
+ * @param domain Physical entity associated with each requested field row.
+ * @return Total number of rows required for the domain.
  */
-Index ModelData::field_rows(FieldDomain domain) {
+Index ModelData::field_rows(FieldDomain domain) const {
+    // Resolve fixed-size and concatenated domains from their authoritative data
+    const Index element_count = static_cast<Index>(elements.size());
+
     switch (domain) {
         case FieldDomain::UNKNOWN:
-            logging::error(false, "ModelData: cannot allocate UNKNOWN fields");
+            logging::error(false,
+                "ModelData: cannot allocate UNKNOWN fields");
             return 0;
         case FieldDomain::NODE:
-            return static_cast<Index>(max_nodes);
+            logging::error(positions != nullptr,
+                "ModelData: POSITION field is not initialized");
+            return positions->rows;
         case FieldDomain::ELEMENT:
-            return static_cast<Index>(max_elems);
+            return element_count;
         case FieldDomain::ELEMENT_NODAL:
             logging::error(element_nodal_offsets != nullptr,
-                           "ModelData: element nodal offset field is not initialized");
-            logging::error((*element_nodal_offsets)(static_cast<Index>(max_elems)) > 0,
-                           "ModelData: no element nodes are available, cannot allocate ELEMENT_NODAL fields");
-            return static_cast<Index>((*element_nodal_offsets)(static_cast<Index>(max_elems)));
+                "ModelData: element nodal offsets are not initialized");
+            return static_cast<Index>((*element_nodal_offsets)(element_count));
         case FieldDomain::ELEMENT_IP:
             logging::error(element_ip_offsets != nullptr,
-                           "ModelData: element IP offset field is not initialized");
-            logging::error((*element_ip_offsets)(static_cast<Index>(max_elems)) > 0,
-                           "ModelData: no integration points are available, cannot allocate ELEMENT_IP fields");
-            return static_cast<Index>((*element_ip_offsets)(static_cast<Index>(max_elems)));
+                "ModelData: element IP offsets are not initialized");
+            return static_cast<Index>((*element_ip_offsets)(element_count));
         case FieldDomain::ELEMENT_MP:
             logging::error(element_mp_offsets != nullptr,
-                           "ModelData: element MP offset field is not initialized");
-            logging::error((*element_mp_offsets)(static_cast<Index>(max_elems)) > 0,
-                           "ModelData: no material points are available, cannot allocate ELEMENT_MP fields");
-            return static_cast<Index>((*element_mp_offsets)(static_cast<Index>(max_elems)));
+                "ModelData: element MP offsets are not initialized");
+            return static_cast<Index>((*element_mp_offsets)(element_count));
     }
-    logging::error(false, "ModelData: unknown field domain");
+
+    logging::error(false,
+        "ModelData: unknown field domain");
     return 0;
 }
 
 /**
- * Enumerates all element-local nodal, integration-point and material-point rows.
+ * Builds model-wide prefix enumerations for all element-local storage domains.
  *
- * Three prefix-offset fields are built in global element-array order. Each
- * existing element receives the first row of its contiguous span, and the final
- * sentinel entry stores the total row count. Material points are ordered first
- * by element, then by integration point and finally by the section-defined
- * material point within that integration point.
+ * Each offset field contains `element_count + 1` scalar entries. Entry `e`
+ * stores the first row owned by element `e`, and the following entry closes its
+ * half-open range. Null element slots retain an empty range. The final entry is
+ * consequently the complete row count of the corresponding field domain.
  *
- * After enumeration, a one-component default material-state field is created
- * for every material-point row. This guarantees valid direct addressing even
- * for stateless materials. A nonlinear analysis may replace that binding with a
- * wider trial field after querying the assigned constitutive state sizes.
+ * Every represented element receives its three starting offsets for direct
+ * access during assembly and result recovery. Element-nodal ranges contain one
+ * row per connected node, integration-point ranges contain `num_ip()` rows and
+ * material-point ranges contain `num_ip() * num_mp_per_ip()` rows.
  *
- * The topology must be complete and enumeration may run only once because
- * element offsets become persistent addressing invariants.
+ * When the model contains material points, a zeroed single-component state field
+ * is installed as the solver-facing default. Nonlinear state management may
+ * replace it with a wider constitutive history field before material evaluation.
+ * Enumeration is a one-time operation because changing offsets would invalidate
+ * all dependent fields and element references.
  */
 void ModelData::initialize_element_enumeration() {
-    // Reject repeated enumeration because existing fields may already depend on
-    // the established element-local row layout
-    logging::error(element_nodal_offsets == nullptr &&
-                   element_ip_offsets    == nullptr &&
-                   element_mp_offsets    == nullptr,
-                   "ModelData: element enumeration has already been initialized");
+    // Reject repeated initialization of offsets referenced by compiled elements
+    logging::error(element_nodal_offsets == nullptr
+                && element_ip_offsets    == nullptr
+                && element_mp_offsets    == nullptr,
+        "ModelData: element enumeration has already been initialized");
 
-    // Allocate prefix arrays with one terminal sentinel beyond the element range
+    // Allocate one prefix entry per element and a terminal total entry
+    const Index element_count = static_cast<Index>(elements.size());
+    const Index offset_rows   = element_count + 1;
+
     element_nodal_offsets = std::make_shared<Field>(
-        "ELEMENT_NODAL_OFFSETS", FieldDomain::ELEMENT, static_cast<Index>(max_elems + 1), 1);
-    element_ip_offsets = std::make_shared<Field>(
-        "ELEMENT_IP_OFFSETS", FieldDomain::ELEMENT, static_cast<Index>(max_elems + 1), 1);
-    element_mp_offsets = std::make_shared<Field>(
-        "ELEMENT_MP_OFFSETS", FieldDomain::ELEMENT, static_cast<Index>(max_elems + 1), 1);
+        "ELEMENT_NODAL_OFFSETS", FieldDomain::ELEMENT, offset_rows, 1);
+    element_ip_offsets    = std::make_shared<Field>(
+        "ELEMENT_IP_OFFSETS", FieldDomain::ELEMENT, offset_rows, 1);
+    element_mp_offsets    = std::make_shared<Field>(
+        "ELEMENT_MP_OFFSETS", FieldDomain::ELEMENT, offset_rows, 1);
 
     Index nodal_offset = 0;
     Index ip_offset    = 0;
     Index mp_offset    = 0;
 
-    // Assign every element the first row of each flattened local-data span
-    for (Index row = 0; row < static_cast<Index>(max_elems); ++row) {
+    // Record every element range and publish its starting offsets in the element
+    for (Index row = 0; row < element_count; ++row) {
         (*element_nodal_offsets)(row) = static_cast<Precision>(nodal_offset);
         (*element_ip_offsets)(row)    = static_cast<Precision>(ip_offset);
         (*element_mp_offsets)(row)    = static_cast<Precision>(mp_offset);
 
-        const ElementPtr& element = elements[row];
-        if (element != nullptr) {
-            element->elem_nodal_offset = static_cast<ID>(nodal_offset);
-            element->elem_ip_offset    = static_cast<ID>(ip_offset);
-            element->elem_mp_offset    = static_cast<ID>(mp_offset);
-
-            nodal_offset += static_cast<Index>(element->n_nodes());
-            ip_offset    += static_cast<Index>(element->num_ip());
-            mp_offset    += static_cast<Index>(element->num_ip()) * element->num_mp_per_ip();
+        const auto& element = elements[static_cast<std::size_t>(row)];
+        if (!element) {
+            continue;
         }
+
+        element->elem_nodal_offset = static_cast<ID>(nodal_offset);
+        element->elem_ip_offset    = static_cast<ID>(ip_offset);
+        element->elem_mp_offset    = static_cast<ID>(mp_offset);
+
+        nodal_offset += static_cast<Index>(element->n_nodes());
+        ip_offset    += static_cast<Index>(element->num_ip());
+        mp_offset    += static_cast<Index>(element->num_ip()) * element->num_mp_per_ip();
     }
 
-    // Store total row counts in the sentinel entries and cache the resulting
-    // integration-point and material-point capacities
-    const Index sentinel = static_cast<Index>(max_elems);
-    (*element_nodal_offsets)(sentinel) = static_cast<Precision>(nodal_offset);
-    (*element_ip_offsets)(sentinel)    = static_cast<Precision>(ip_offset);
-    (*element_mp_offsets)(sentinel)    = static_cast<Precision>(mp_offset);
-    max_integration_points = static_cast<ID>(ip_offset);
-    max_material_points    = static_cast<ID>(mp_offset);
+    // Close the final element ranges and expose the total domain sizes
+    (*element_nodal_offsets)(element_count) = static_cast<Precision>(nodal_offset);
+    (*element_ip_offsets)(element_count)    = static_cast<Precision>(ip_offset);
+    (*element_mp_offsets)(element_count)    = static_cast<Precision>(mp_offset);
 
-    // Keep one directly addressable state row for every enumerated material
-    // point. Stateless constitutive laws simply ignore the single dummy
-    // component. Nonlinear state management replaces this field with the
-    // correctly sized active trial buffer when history variables are present.
-    if (max_material_points > 0) {
+    // Provide a zeroed default state row for every enumerated material point
+    if (mp_offset > 0) {
         material_state = std::make_shared<Field>(
-            "MATERIAL_STATE",
-            FieldDomain::ELEMENT_MP,
-            static_cast<Index>(max_material_points),
-            1
-        );
+            "MATERIAL_STATE", FieldDomain::ELEMENT_MP, mp_offset, 1);
         material_state->set_zero();
     }
 }
@@ -211,63 +209,87 @@ bool ModelData::has_field(const std::string& name) const {
 }
 
 Field::Ptr ModelData::get_field(const std::string& name) const {
-    auto it = fields.find(name);
-    if (it == fields.end()) {
-        return nullptr;
-    }
-    return it->second;
+    const auto it = fields.find(name);
+    return it == fields.end() ? nullptr : it->second;
 }
 
 /**
- * Creates field storage for one semantic domain and optionally registers it by
- * name.
+ * Creates or retrieves a dense field with model-derived row dimensions.
  *
- * Registered creation is idempotent: an existing field is returned after its
- * domain and component count have been validated. Unregistered creation always
- * produces independent temporary storage. New fields derive their row count
- * from `field_rows()` and may be initialized with NaN to expose missing writes.
+ * Registered creation first searches the global field dictionary. A matching
+ * field is returned unchanged after its domain and component count have been
+ * validated; `fill_nan` is not reapplied to existing storage. Otherwise a new
+ * field is allocated using `field_rows(domain)`, optionally initialized with
+ * NaN and inserted into the registry when requested.
+ *
+ * Unregistered fields remain independently owned by the returned shared pointer
+ * and may use a diagnostic name already present in the registry.
  *
  * @param name Non-empty field name.
- * @param domain Semantic domain controlling the row count.
- * @param components Number of scalar components stored in every row.
- * @param fill_nan Initialize new storage with NaN when `true`.
- * @param reg Register and reuse the field in the model field dictionary.
- * @return Shared field storage.
+ * @param domain Physical entity associated with each field row.
+ * @param components Number of scalar components stored per row.
+ * @param fill_nan Initializes newly allocated storage with NaN when true.
+ * @param reg Reuses and registers the field by name when true.
+ * @return Shared pointer to the compatible existing or newly allocated field.
  */
-Field::Ptr ModelData::create_field(const std::string& name, FieldDomain domain, Index components, bool fill_nan, bool reg) {
-    logging::error(!name.empty(), "Field name cannot be empty");
+Field::Ptr ModelData::create_field(const std::string& name,
+                                   FieldDomain        domain,
+                                   Index              components,
+                                   bool               fill_nan,
+                                   bool               reg) {
+    // Validate the field identity before registry lookup or allocation
+    logging::error(!name.empty(),
+        "Field name cannot be empty");
 
-    if (!reg) {
-        const Index rows = field_rows(domain);
-        auto field = std::make_shared<Field>(name, domain, rows, components);
-        if (fill_nan) {
-            field->fill_nan();
+    // Reuse registered storage only when its physical layout is compatible
+    if (reg) {
+        const auto it = fields.find(name);
+        if (it != fields.end()) {
+            const auto& field = it->second;
+            logging::error(field->domain == domain,
+                "Field '", name, "': domain mismatch");
+            logging::error(field->components == components,
+                "Field '", name, "': components mismatch");
+            return field;
         }
-        return field;
     }
 
-    auto it = fields.find(name);
-    if (it != fields.end()) {
-        Field::Ptr field = it->second;
-        logging::error(field->domain == domain, "Field '", name, "': domain mismatch");
-        logging::error(field->components == components, "Field '", name, "': components mismatch");
-        return field;
-    }
-
-    const Index rows = field_rows(domain);
-    auto field = std::make_shared<Field>(name, domain, rows, components);
+    // Allocate and initialize storage from the authoritative domain row count
+    auto field = std::make_shared<Field>(name, domain, field_rows(domain), components);
     if (fill_nan) {
         field->fill_nan();
     }
-    fields.emplace(name, field);
+
+    // Publish named persistent fields while leaving temporary fields independent
+    if (reg) {
+        fields.emplace(name, field);
+    }
     return field;
 }
 
-Field ModelData::create_field_(const std::string& name, FieldDomain domain, Index components, bool fill_nan) {
-    logging::error(!name.empty(), "Field name cannot be empty");
+/**
+ * Creates an unregistered field value with model-derived row dimensions.
+ *
+ * This value-returning variant always allocates independent temporary storage
+ * and never consults or modifies the named field registry.
+ *
+ * @param name Non-empty diagnostic field name.
+ * @param domain Physical entity associated with each field row.
+ * @param components Number of scalar components stored per row.
+ * @param fill_nan Initializes the field with NaN when true.
+ * @return Independently owned field value.
+ */
+Field ModelData::create_field_(const std::string& name,
+                               FieldDomain        domain,
+                               Index              components,
+                               bool               fill_nan) {
+    // Validate and allocate temporary storage from the requested domain
+    logging::error(!name.empty(),
+        "Field name cannot be empty");
 
-    const Index rows = field_rows(domain);
-    auto field = Field(name, domain, rows, components);
+    Field field{name, domain, field_rows(domain), components};
+
+    // Preserve zero initialization unless an undefined NaN field was requested
     if (fill_nan) {
         field.fill_nan();
     }
@@ -275,80 +297,90 @@ Field ModelData::create_field_(const std::string& name, FieldDomain domain, Inde
 }
 
 /**
- * Projects a flattened element-nodal field onto shared global nodes by weighted
- * averaging.
+ * Projects element-nodal values onto unique global nodes by weighted averaging.
  *
- * Every element contributes each of its local nodal rows with the scalar weight
- * stored for that element. Contributions are accumulated component-wise in
- * global node order and normalized by the sum of incident non-zero weights.
- * Nodes without a contribution remain zero. Prefix-offset consistency and node
- * identifiers are validated before accessing the flattened input rows.
+ * The compiled element-nodal prefix offsets locate the local rows belonging to
+ * each dense element. For every connected global node and component, the method
+ * accumulates the element-local value multiplied by the scalar weight of its
+ * element. The accumulated field is then divided by the sum of participating
+ * weights at that node.
  *
- * @param element_nodal Source field in `ELEMENT_NODAL` ordering.
- * @param element_weights Scalar weight for every global element slot.
- * @param name Name of the returned nodal field.
- * @return Weighted nodal projection with the source component count.
+ * Elements with zero weight do not participate. Nodes without a contributing
+ * element retain the initialized zero row. The operation assumes that every
+ * represented element owns exactly one element-nodal row per connectivity node.
+ *
+ * @param element_nodal Source field in the `ELEMENT_NODAL` domain.
+ * @param element_weights Scalar `ELEMENT` field controlling contribution weight.
+ * @param name Non-empty name assigned to the returned nodal field.
+ * @return Weighted global `NODE` field with the source component count.
  */
-Field ModelData::element_nodal_to_nodal(const Field& element_nodal,
-                                        const Field& element_weights,
+Field ModelData::element_nodal_to_nodal(const Field&       element_nodal,
+                                        const Field&       element_weights,
                                         const std::string& name) const {
-    // Validate domains, dimensions and the element-nodal addressing metadata
+    // Validate field domains, component conventions and compiled prerequisites
     logging::error(element_nodal.domain == FieldDomain::ELEMENT_NODAL,
-                   "ModelData: element_nodal_to_nodal requires ELEMENT_NODAL input field '",
-                   element_nodal.name, "'");
+        "ModelData: element_nodal_to_nodal requires ELEMENT_NODAL input field '",
+        element_nodal.name, "'");
     logging::error(element_weights.domain == FieldDomain::ELEMENT,
-                   "ModelData: element_nodal_to_nodal requires ELEMENT weight field '",
-                   element_weights.name, "'");
+        "ModelData: element_nodal_to_nodal requires ELEMENT weight field '",
+        element_weights.name, "'");
     logging::error(element_weights.components == 1,
-                   "ModelData: element weight field '", element_weights.name,
-                   "' must have exactly one component");
-    logging::error(element_weights.rows == static_cast<Index>(max_elems),
-                   "ModelData: element weight field '", element_weights.name,
-                   "' has ", element_weights.rows, " rows, expected ", max_elems);
+        "ModelData: element weight field '", element_weights.name,
+        "' must have exactly one component");
     logging::error(element_nodal_offsets != nullptr,
-                   "ModelData: element nodal offset field is not initialized");
-    logging::error(!name.empty(), "ModelData: projected nodal field name cannot be empty");
+        "ModelData: element nodal offsets are not initialized");
+    logging::error(positions != nullptr,
+        "ModelData: POSITION field is not initialized");
+    logging::error(!name.empty(),
+        "ModelData: projected nodal field name cannot be empty");
 
-    const Field& offsets = *element_nodal_offsets;
-    const Index expected_rows = static_cast<Index>(offsets(static_cast<Index>(max_elems), 0));
+    // Resolve dense assembly dimensions and validate the complete source layout
+    const Index element_count = static_cast<Index>(elements.size());
+    const Index node_count    = positions->rows;
+
+    logging::error(element_weights.rows == element_count,
+        "ModelData: element weight field '", element_weights.name,
+        "' has ", element_weights.rows, " rows, expected ", element_count);
+
+    const Field& offsets      = *element_nodal_offsets;
+    const Index expected_rows = static_cast<Index>(offsets(element_count, 0));
     logging::error(element_nodal.rows == expected_rows,
-                   "ModelData: ELEMENT_NODAL field '", element_nodal.name,
-                   "' has ", element_nodal.rows, " rows, expected ", expected_rows);
+        "ModelData: ELEMENT_NODAL field '", element_nodal.name,
+        "' has ", element_nodal.rows, " rows, expected ", expected_rows);
 
-    // Initialize global accumulation and one scalar normalization weight per node
-    Field nodal{name, FieldDomain::NODE, static_cast<Index>(max_nodes), element_nodal.components};
+    // Initialize nodal value and weight accumulators for the projection
+    Field nodal{name, FieldDomain::NODE, node_count, element_nodal.components};
     nodal.set_zero();
-    std::vector<Precision> weight_sum(static_cast<std::size_t>(max_nodes), Precision(0));
+    std::vector<Precision> weight_sum(static_cast<std::size_t>(node_count), Precision(0));
 
-    // Accumulate every active element-local node into its shared global node
-    for (Index elem_idx = 0; elem_idx < static_cast<Index>(max_elems); ++elem_idx) {
-        const ElementPtr& element = elements[elem_idx];
+    // Accumulate every participating element-local row at its connected global node
+    for (Index elem_idx = 0; elem_idx < element_count; ++elem_idx) {
+        const auto& element = elements[static_cast<std::size_t>(elem_idx)];
         if (!element) {
             continue;
         }
 
         const ID elem_id = element->elem_id;
-        logging::error(elem_id >= 0 && elem_id < max_elems,
-                       "ModelData: element id out of range in element_nodal_to_nodal: ", elem_id);
+        logging::error(elem_id >= 0 && static_cast<Index>(elem_id) < element_count,
+            "ModelData: element id out of range in element_nodal_to_nodal: ", elem_id);
 
         const Precision weight = element_weights(static_cast<Index>(elem_id), 0);
         if (weight == Precision(0)) {
             continue;
         }
 
-        const Index offset = static_cast<Index>(offsets(static_cast<Index>(elem_id), 0));
+        const Index offset      = static_cast<Index>(offsets(static_cast<Index>(elem_id), 0));
         const Index next_offset = static_cast<Index>(offsets(static_cast<Index>(elem_id) + 1, 0));
         logging::error(next_offset >= offset,
-                       "ModelData: invalid element nodal offsets for element ", elem_id);
+            "ModelData: invalid element nodal offsets for element ", elem_id);
         logging::error(next_offset - offset == static_cast<Index>(element->n_nodes()),
-                       "ModelData: element nodal offset span does not match element node count for element ",
-                       elem_id);
+            "ModelData: element nodal offset span does not match node count for element ", elem_id);
 
         for (Index local_node = 0; local_node < static_cast<Index>(element->n_nodes()); ++local_node) {
             const Index element_row = offset + local_node;
-            const Index node_id = static_cast<Index>(element->nodes()[local_node]);
-            logging::error(node_id < static_cast<Index>(max_nodes),
-                           "ModelData: node id out of range in element_nodal_to_nodal: ", node_id);
+            const Index node_id     = static_cast<Index>(element->nodes()[local_node]);
+            logging::error(node_id < node_count,
+                "ModelData: node id out of range in element_nodal_to_nodal: ", node_id);
 
             for (Index component = 0; component < element_nodal.components; ++component) {
                 nodal(node_id, component) += weight * element_nodal(element_row, component);
@@ -357,8 +389,8 @@ Field ModelData::element_nodal_to_nodal(const Field& element_nodal,
         }
     }
 
-    // Normalize only nodes that received at least one non-zero contribution
-    for (Index node = 0; node < static_cast<Index>(max_nodes); ++node) {
+    // Normalize accumulated values by the total element weight at each node
+    for (Index node = 0; node < node_count; ++node) {
         const Precision weight = weight_sum[static_cast<std::size_t>(node)];
         if (weight == Precision(0)) {
             continue;
@@ -371,5 +403,4 @@ Field ModelData::element_nodal_to_nodal(const Field& element_nodal,
     return nodal;
 }
 
-} // namespace model
-} // namespace fem
+} // namespace fem::model

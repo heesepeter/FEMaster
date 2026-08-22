@@ -1,7 +1,21 @@
-// register_thermalexpansion.inl — DSL registration for *THERMALEXPANSION
+/**
+ * @file register_thermalexpansion.inl
+ * @brief Registers isotropic thermal-expansion material data.
+ *
+ * The material-scoped `THERMALEXPANSION` command reads one coefficient of
+ * thermal expansion and assigns it to the material active in the surrounding
+ * `MATERIAL` definition. Validation ensures that the command cannot silently
+ * modify an absent material context.
+ *
+ * The stored coefficient is later consumed together with temperature fields by
+ * thermal load and constitutive calculations; this file only defines the input
+ * grammar and transfers the scalar material property.
+ *
+ * @author Finn Eggers
+ * @date 19.08.2026
+ */
 
-#include <stdexcept>
-
+#include "../../../core/logging.h"
 #include "../../../core/types_num.h"
 #include "../../dsl/condition.h"
 
@@ -21,9 +35,8 @@ inline void register_thermal_expansion(fem::io::dsl::Registry& registry, model::
                 )
                 .bind([&model](fem::Precision alpha) {
                     auto material = model._data->materials.get();
-                    if (!material) {
-                        throw std::runtime_error("THERMALEXPANSION requires an active material context");
-                    }
+                    logging::error(material != nullptr,
+                        "THERMALEXPANSION requires an active material context");
                     material->set_thermal_expansion(alpha);
                 })
             )

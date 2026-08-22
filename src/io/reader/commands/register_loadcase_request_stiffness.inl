@@ -1,10 +1,24 @@
-// register_loadcase_request_stiffness.inl — registers REQUESTSTIFFNESS within *LOADCASE
+/**
+ * @file register_loadcase_request_stiffness.inl
+ * @brief Registers stiffness-matrix output for supported load cases.
+ *
+ * `REQUESTSTIFFNESS` stores an optional matrix-output filename on the active
+ * linear static, nonlinear static or buckling analysis. If the deck omits the
+ * filename, a stable default is derived from the parser-assigned load-case ID.
+ *
+ * The command does not assemble or serialize a matrix itself. Each concrete
+ * analysis decides which tangent, elastic or reduced operators are written at
+ * the appropriate point in its solution sequence.
+ *
+ * @author Finn Eggers
+ * @date 19.08.2026
+ */
 
-#include <stdexcept>
 #include <string>
 
 #include "../parser.h"
 
+#include "../../../core/logging.h"
 #include "../../../loadcase/linear_buckling.h"
 #include "../../../loadcase/linear_static.h"
 #include "../../../loadcase/nonlinear_static.h"
@@ -23,9 +37,8 @@ inline void register_loadcase_request_stiffness(fem::io::dsl::Registry& registry
 
         command.on_enter([&parser](const fem::io::dsl::Keys& keys) {
             auto* base = parser.active_loadcase();
-            if (!base) {
-                throw std::runtime_error("REQUESTSTIFFNESS must appear inside *LOADCASE");
-            }
+            logging::error(base != nullptr,
+                "REQUESTSTIFFNESS must appear inside *LOADCASE");
 
             std::string file = keys.has("FILE") ? keys.raw("FILE") : "stiffness_" + std::to_string(base->get_id()) + ".txt";
 
@@ -42,7 +55,8 @@ inline void register_loadcase_request_stiffness(fem::io::dsl::Registry& registry
                 return;
             }
 
-            throw std::runtime_error("REQUESTSTIFFNESS not supported for loadcase type " + parser.active_loadcase_type());
+            logging::error(false,
+                "REQUESTSTIFFNESS not supported for loadcase type ", base->type_name());
         });
 
         command.variant(fem::io::dsl::Variant::make());

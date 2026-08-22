@@ -24,9 +24,6 @@ namespace model {
 FieldMatrix::FieldMatrix(Index rows, Index cols)
     : rows_(rows),
       cols_(cols) {
-    logging::error(rows >= 0, "FieldMatrix: rows must be non-negative");
-    logging::error(cols >= 0, "FieldMatrix: cols must be non-negative");
-
     const auto row_count = static_cast<std::size_t>(rows);
     const auto col_count = static_cast<std::size_t>(cols);
 
@@ -86,7 +83,7 @@ bool FieldMatrix::has_any_finite() const {
 }
 
 std::size_t FieldMatrix::offset(Index row, Index col) const {
-    logging::error(row >= 0 && row < rows_ && col >= 0 && col < cols_,
+    logging::error(row < rows_ && col < cols_,
         "FieldMatrix: index (", row, ", ", col, ") is outside ", rows_, "x", cols_);
 
     return static_cast<std::size_t>(row) *
@@ -159,10 +156,44 @@ bool Field::has_any_finite() const {
     return values.has_any_finite();
 }
 
+void Field::resize_rows(Index row_count, Precision fill_value) {
+    logging::error(row_count > 0,
+        "Field '", name, "': rows must remain positive");
+    FieldMatrix resized(row_count, components);
+    for (Index row = 0; row < row_count; ++row) {
+        for (Index component = 0; component < components; ++component) {
+            resized(row, component) = row < rows
+                ? values(row, component)
+                : fill_value;
+        }
+    }
+    rows = row_count;
+    values = std::move(resized);
+}
+
 bool Field::is_nan(Index row, Index component) const {
     const Precision value = values(row, component);
 
     return !std::isfinite(static_cast<double>(value));
+}
+
+/**
+ * Validates that every stored field component is finite.
+ *
+ * NaN and infinite values are treated as numerical failures. The supplied
+ * label identifies the operation or physical result being checked, while the
+ * reported row and component locate the invalid value in the field storage.
+ *
+ * @param label Diagnostic name included in a failed check.
+ */
+void Field::check_finite(const std::string& label) const {
+    // Inspect the complete rectangular field storage
+    for (Index row = 0; row < rows; ++row) {
+        for (Index component = 0; component < components; ++component) {
+            logging::error(std::isfinite(static_cast<double>(values(row, component))),
+                label, " row ", row, " has invalid value at component ", component);
+        }
+    }
 }
 
 Vec3 Field::row_vec3(Index row) const {

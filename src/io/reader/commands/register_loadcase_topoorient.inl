@@ -1,9 +1,21 @@
-// register_loadcase_topoorient.inl — registers TOPOORIENT for LINEARSTATICTOPO loadcases
-
-#include <stdexcept>
+/**
+ * @file register_loadcase_topoorient.inl
+ * @brief Registers element orientations for topology-weighted statics.
+ *
+ * `TOPOORIENT` resolves a named three-component element field and assigns it to
+ * the active `LinearStaticTopo` analysis. The field supplies the element-wise
+ * orientation data required by orientation-dependent topology calculations.
+ *
+ * Domain and component-count checks are performed while parsing. Interpretation
+ * of the stored orientation vectors remains within the load-case formulation.
+ *
+ * @author Finn Eggers
+ * @date 19.08.2026
+ */
 
 #include "../parser.h"
 
+#include "../../../core/logging.h"
 #include "../../../loadcase/linear_static_topo.h"
 
 namespace fem::io::reader::commands {
@@ -20,19 +32,16 @@ inline void register_loadcase_topoorient(fem::io::dsl::Registry& registry, Parse
         );
 
         command.on_enter([&parser](const fem::io::dsl::Keys& keys) {
-            auto* lc = parser.active_loadcase_as<loadcase::LinearStaticTopo>();
-            if (!lc) {
-                throw std::runtime_error("TOPOORIENT only valid for LINEARSTATICTOPO loadcases");
-            }
+            auto* lc = dynamic_cast<loadcase::LinearStaticTopo*>(parser.active_loadcase());
+            logging::error(lc != nullptr,
+                "TOPOORIENT only valid for LINEARSTATICTOPO loadcases");
 
             const std::string field_name = keys.raw("FIELD");
             auto field = parser.model()._data->get_field(field_name);
-            if (!field) {
-                throw std::runtime_error("TOPOORIENT field '" + field_name + "' does not exist");
-            }
-            if (field->domain != model::FieldDomain::ELEMENT || field->components != 3) {
-                throw std::runtime_error("TOPOORIENT field '" + field_name + "' must be ELEMENT domain with 3 components");
-            }
+            logging::error(field != nullptr,
+                "TOPOORIENT field '", field_name, "' does not exist");
+            logging::error(field->domain == model::FieldDomain::ELEMENT && field->components == 3,
+                "TOPOORIENT field '", field_name, "' must be ELEMENT domain with 3 components");
             lc->orientation = field;
         });
 

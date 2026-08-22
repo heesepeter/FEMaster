@@ -2,19 +2,18 @@
  * @file model_material_state.cpp
  * @brief Implements model-wide material-point state initialization.
  *
- * Material history variables are stored in one dense `ELEMENT_MP` field. Every
- * row belongs to one globally enumerated material point and every row has the
- * maximum state width required by any material that is actually assigned to an
- * element. Materials use only the leading `Elasticity::state_size()` entries of
- * their rows.
+ * Constitutive history is stored in one `ELEMENT_MP` field whose rows follow
+ * the material-point enumeration created during model compilation. Every row
+ * reserves a uniform component width equal to the largest state vector required
+ * by any assigned elastic law in the compiled model.
  *
- * The model initializes storage but does not own nonlinear trial buffers. The
- * active load case owns committed and trial fields and binds only the currently
- * active state through `ModelData::material_state`.
+ * This file only defines the initial value of that storage. Trial, committed and
+ * rollback semantics during nonlinear solution remain the responsibility of the
+ * nonlinear state manager and the constitutive evaluation workflow.
  *
- * @see Model::maximum_material_state_size
- * @see Model::initialize_material_state
- * @see material::Elasticity::state_size
+ * @see Model
+ * @see material::Elasticity
+ * @see loadcase::tools::NonlinearStateManager
  *
  * @author Finn Eggers
  * @date 07.08.2026
@@ -27,26 +26,22 @@
 
 #include <algorithm>
 
-namespace fem {
-namespace model {
+namespace fem::model {
 
 /**
- * Determines the common component width required by the active material-state
- * field.
+ * Determines the uniform component width required by material history fields.
  *
- * Only materials assigned through an element section participate. Elements
- * without a section, without a material or without elasticity are skipped. A
- * single dense field uses the maximum state width so every globally enumerated
- * material point has a constant row stride; individual materials consume only
- * their leading `Elasticity::state_size()` components.
+ * The routine scans all compiled elements with an assigned section, material
+ * and elastic law. Stateless laws contribute zero components; elements without
+ * a complete constitutive assignment are ignored. The maximum is suitable for
+ * every row of the model-wide `ELEMENT_MP` state field.
  *
- * @return Maximum constitutive state size of all assigned elasticities, or zero
- *         when the model is entirely stateless.
+ * @return Largest constitutive state-vector size used by any compiled element.
  */
 Index Model::maximum_material_state_size() const {
     Index maximum_size = 0;
 
-    // Inspect only constitutive models reachable from active element sections
+    // Accumulate the largest state requirement across assigned elastic laws
     for (const auto& element : _data->elements) {
         if (!element || !element->_section || !element->_section->material_) {
             continue;
@@ -57,51 +52,45 @@ Index Model::maximum_material_state_size() const {
             continue;
         }
 
-        maximum_size = std::max(
-            maximum_size,
-            material->elasticity()->state_size()
-        );
+        maximum_size = std::max(maximum_size, material->elasticity()->state_size());
     }
 
     return maximum_size;
 }
 
 /**
- * Initializes every enumerated material-point row to its constitutive reference
- * history.
+ * Initializes every enumerated material-point state in a compatible field.
  *
- * The supplied field must cover the complete `ELEMENT_MP` domain and provide at
- * least the maximum state width required by any assigned elasticity. The field
- * is zeroed first so unused trailing components and stateless rows have a stable
- * value. Stateful materials then initialize each integration-point/material-
- * point row belonging to their element through the common elasticity API.
+ * The field must use the `ELEMENT_MP` domain, contain exactly the row count
+ * established by compiled material-point enumeration and provide at least the
+ * maximum component width required by the model. All storage is cleared first.
+ * Each stateful elastic law then initializes the contiguous state vector at
+ * every integration-point/material-point row owned by its element.
  *
- * Element offsets must already have been established by
- * `ModelData::initialize_element_enumeration()`. The operation initializes
- * storage only; it neither binds the field as active state nor commits nonlinear
- * history.
+ * Elements without a section, material, elastic law or state variables leave
+ * their allocated rows at zero.
  *
- * @param state Material-state field to initialize in global `ELEMENT_MP` order.
+ * @param state Model-wide material-point history field to initialize in place.
  */
 void Model::initialize_material_state(Field& state) const {
-    // Validate the global material-point layout before touching the field
+    // Validate the field domain and compiled material-point dimensions
     logging::error(state.domain == FieldDomain::ELEMENT_MP,
         "Material state field must use ELEMENT_MP domain");
-    logging::error(state.rows == static_cast<Index>(_data->max_material_points),
+
+    const Index material_points = _data->field_rows(FieldDomain::ELEMENT_MP);
+    logging::error(state.rows == material_points,
         "Material state field has ", state.rows,
-        " rows, expected ", _data->max_material_points);
+        " rows, expected ", material_points);
 
     const Index maximum_size = maximum_material_state_size();
     logging::error(state.components >= maximum_size,
         "Material state field has ", state.components,
         " components, expected at least ", maximum_size);
 
-    // Establish deterministic values for stateless points and unused trailing
-    // components before material-specific initialization
+    // Establish a deterministic zero state for unused rows and components
     state.set_zero();
 
-    // Initialize every stateful material point in element, integration-point
-    // and section-material-point order
+    // Initialize the constitutive state vector at every represented material point
     for (const auto& element : _data->elements) {
         if (!element || !element->_section || !element->_section->material_) {
             continue;
@@ -123,22 +112,18 @@ void Model::initialize_material_state(Field& state) const {
             " exceeds field width ", state.components,
             " for element ", element->elem_id);
 
-        // The element owns the mapping from its local IP/MP pair into the
-        // globally flattened material-point field
+        // Resolve each element-local integration/material point to its global row
         for (Index ip = 0; ip < static_cast<Index>(element->num_ip()); ++ip) {
             for (Index mp = 0; mp < element->num_mp_per_ip(); ++mp) {
                 const Index row = element->mp_index(ip, mp);
-                logging::error(row >= 0 && row < state.rows,
+                logging::error(row < state.rows,
                     "Material point row ", row,
                     " is out of range for element ", element->elem_id);
 
-                elasticity->initialize_state(
-                    state.data() + row * state.components
-                );
+                elasticity->initialize_state(state.data() + row * state.components);
             }
         }
     }
 }
 
-} // namespace model
-} // namespace fem
+} // namespace fem::model

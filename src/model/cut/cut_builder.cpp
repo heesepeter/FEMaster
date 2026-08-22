@@ -874,6 +874,17 @@ void add_element_to_matching_sets(
             set->add(new_element_id);
         }
     }
+
+    // Section regions are compiled snapshots of the element sets.  Pretension
+    // cuts happen after compilation, so extending only elem_sets would leave
+    // generated children without the section of their parent element.
+    for (const auto& section : model_data.sections) {
+        if (section == nullptr || section->region_ == nullptr) continue;
+        const auto& region = section->region_;
+        const bool contains_original = std::find(
+            region->begin(), region->end(), original_element_id) != region->end();
+        if (contains_original) region->add(new_element_id);
+    }
 }
 
 std::array<ID, 4> oriented_c3d4_nodes(

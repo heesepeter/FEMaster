@@ -1,9 +1,22 @@
-// register_loadcase_numeigenvalues.inl — registers NUMEIGENVALUES for loadcases
-
-#include <stdexcept>
+/**
+ * @file register_loadcase_numeigenvalues.inl
+ * @brief Registers the requested number of eigenpairs for modal analyses.
+ *
+ * `NUMEIGENVALUES` reads one positive mode count inside a `LOADCASE` scope and
+ * applies it to either linear buckling or eigenfrequency extraction. These are
+ * the two FEMaster analyses whose result cardinality is determined by a
+ * generalized eigenvalue solve.
+ *
+ * Spectral assembly and solver selection remain within the concrete load case;
+ * this command only validates and stores the requested count.
+ *
+ * @author Finn Eggers
+ * @date 19.08.2026
+ */
 
 #include "../parser.h"
 
+#include "../../../core/logging.h"
 #include "../../../loadcase/linear_buckling.h"
 #include "../../../loadcase/linear_eigenfreq.h"
 
@@ -21,14 +34,12 @@ inline void register_loadcase_numeigenvalues(fem::io::dsl::Registry& registry, P
                     .one<int>().name("COUNT").desc("Number of eigenvalues")
                 )
                 .bind([&parser](int count) {
-                    if (count <= 0) {
-                        throw std::runtime_error("NUMEIGENVALUES requires a positive integer");
-                    }
+                    logging::error(count > 0,
+                        "NUMEIGENVALUES requires a positive integer");
 
                     auto* base = parser.active_loadcase();
-                    if (!base) {
-                        throw std::runtime_error("NUMEIGENVALUES must appear inside *LOADCASE");
-                    }
+                    logging::error(base != nullptr,
+                        "NUMEIGENVALUES must appear inside *LOADCASE");
 
                     if (auto* lc = dynamic_cast<loadcase::LinearBuckling*>(base)) {
                         lc->num_eigenvalues = count;
@@ -39,7 +50,8 @@ inline void register_loadcase_numeigenvalues(fem::io::dsl::Registry& registry, P
                         return;
                     }
 
-                    throw std::runtime_error("NUMEIGENVALUES not supported for loadcase type " + parser.active_loadcase_type());
+                    logging::error(false,
+                        "NUMEIGENVALUES not supported for loadcase type ", base->type_name());
                 })
             )
         );
@@ -47,4 +59,3 @@ inline void register_loadcase_numeigenvalues(fem::io::dsl::Registry& registry, P
 }
 
 } // namespace fem::io::reader::commands
-

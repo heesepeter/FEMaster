@@ -118,8 +118,15 @@ struct Field {
     // Returns whether at least one field value is finite
     [[nodiscard]] bool has_any_finite() const;
 
+    // Changes the row count while preserving the overlapping prefix.
+    void resize_rows(Index row_count, Precision fill_value = Precision(0));
+
     // Returns whether a field component is not finite
     [[nodiscard]] bool is_nan(Index row, Index component) const;
+
+    // Validates that every stored component is finite and identifies invalid
+    // rows and components through the supplied diagnostic label.
+    void check_finite(const std::string& label) const;
 
     // Returns the first three components of a row
     [[nodiscard]] Vec3 row_vec3(Index row) const;
