@@ -23,6 +23,8 @@ std::string get_solver_name(SolverDevice device, SolverMethod method) {
 
 #ifdef USE_MKL
     return "CPU DIRECT MKL PardisoLDLT";
+#elif defined(USE_ACCELERATE_SPARSE)
+    return "CPU DIRECT Apple Accelerate";
 #else
     return "CPU DIRECT Eigen SimplicialLDLT";
 #endif

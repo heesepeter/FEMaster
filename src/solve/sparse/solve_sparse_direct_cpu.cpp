@@ -8,11 +8,79 @@
 #include <Eigen/SparseLU>
 #include <Eigen/SparseQR>
 
+#ifdef USE_ACCELERATE_SPARSE
+#include <Accelerate/Accelerate.h>
+#include <vector>
+#endif
+
 #ifdef USE_MKL
 #include <mkl.h>
 #endif
 
 namespace fem::solver::detail {
+
+#ifdef USE_ACCELERATE_SPARSE
+namespace {
+
+bool solve_accelerate_spd(SparseMatrix& mat,
+                          const DynamicMatrix& rhs,
+                          DynamicMatrix& solution) {
+    mat.makeCompressed();
+
+    std::vector<long> column_starts(static_cast<std::size_t>(mat.cols()) + 1, 0);
+    std::vector<int> row_indices;
+    std::vector<double> values;
+    row_indices.reserve(static_cast<std::size_t>(mat.nonZeros() / 2 + mat.rows()));
+    values.reserve(row_indices.capacity());
+
+    for (int column = 0; column < mat.outerSize(); ++column) {
+        column_starts[static_cast<std::size_t>(column)] =
+            static_cast<long>(row_indices.size());
+        for (SparseMatrix::InnerIterator entry(mat, column); entry; ++entry) {
+            if (entry.row() < column) continue;
+            row_indices.push_back(entry.row());
+            values.push_back(entry.value());
+        }
+    }
+    column_starts.back() = static_cast<long>(row_indices.size());
+
+    SparseAttributes_t attributes{};
+    attributes.transpose = false;
+    attributes.triangle = SparseLowerTriangle;
+    attributes.kind = SparseSymmetric;
+
+    SparseMatrixStructure structure{
+        static_cast<int>(mat.rows()),
+        static_cast<int>(mat.cols()),
+        column_starts.data(),
+        row_indices.data(),
+        attributes,
+        1
+    };
+    SparseMatrix_Double matrix{structure, values.data()};
+    SparseOpaqueFactorization_Double factor =
+        SparseFactor(SparseFactorizationCholesky, matrix);
+
+    if (factor.status < SparseStatusOK) {
+        SparseCleanup(factor);
+        return false;
+    }
+
+    solution = rhs;
+    DenseMatrix_Double dense{
+        static_cast<int>(solution.rows()),
+        static_cast<int>(solution.cols()),
+        static_cast<int>(solution.outerStride()),
+        SparseAttributes_t{},
+        solution.data()
+    };
+    SparseSolve(factor, dense);
+    SparseCleanup(factor);
+    return solution.allFinite();
+}
+
+} // namespace
+#endif
 
 DynamicMatrix solve_direct_cpu(SparseMatrix& mat,
                                const DynamicMatrix& rhs,
@@ -74,6 +142,18 @@ DynamicMatrix solve_direct_cpu(SparseMatrix& mat,
         qr.compute(mat);
         sol = qr.solve(rhs);
         logging::error(qr.info() == Eigen::Success, "Solving failed with SparseQR");
+    }
+#elif defined(USE_ACCELERATE_SPARSE)
+    logging::info(true, "Using Apple Accelerate sparse Cholesky solver");
+    DynamicMatrix sol;
+    if (!solve_accelerate_spd(mat, rhs, sol)) {
+        logging::warning(true,
+            "Accelerate sparse Cholesky failed; falling back to Eigen SparseQR");
+        Eigen::SparseQR<SparseMatrix, Eigen::COLAMDOrdering<int>> qr(mat);
+        qr.compute(mat);
+        sol = qr.solve(rhs);
+        logging::error(qr.info() == Eigen::Success,
+                       "Solving failed with SparseQR");
     }
 #else
     logging::info(true, "Using Eigen SimplicialLDLT solver");

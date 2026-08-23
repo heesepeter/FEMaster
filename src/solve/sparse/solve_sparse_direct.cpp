@@ -19,9 +19,16 @@ DynamicMatrix solve_direct(SolverDevice device,
 #endif
 
     logging::info(true, "");
+    std::string solver_name = get_solver_name(device, DIRECT);
+#if defined(USE_ACCELERATE_SPARSE) && !defined(USE_MKL)
+    if (device == CPU && matrix_type == DirectSolverMatrixType::General) {
+        solver_name = "CPU DIRECT Eigen SparseLU";
+    }
+#endif
+
     logging::info(true, "Solving system with N=", mat.cols(), " nnz=", mat.nonZeros(),
                   " nrhs=", rhs.cols(),
-                  " using ", get_solver_name(device, DIRECT),
+                  " using ", solver_name,
                   matrix_type == DirectSolverMatrixType::SPD ? " (SPD)" : " (general)");
 
     logging::up();

@@ -63,6 +63,11 @@ void print_banner() {
 #else
     std::cout << "*           MKL Supported         : No                               *\n";
 #endif
+#ifdef USE_ACCELERATE_SPARSE
+    std::cout << "*           Accelerate Sparse     : Yes                              *\n";
+#else
+    std::cout << "*           Accelerate Sparse     : No                               *\n";
+#endif
 #ifdef USE_CUDSS
     std::cout << "*           cuDSS Supported       : Yes                              *\n";
 #else
