@@ -223,6 +223,30 @@ const FRDField& frd_field(const std::string& field_name) {
             }
         },
         {
+            {"DISPLACEMENTREAL"}, "DISPREAL",
+            {
+                FRDComponent::vector("D1" , 1),
+                FRDComponent::vector("D2" , 2),
+                FRDComponent::vector("D3" , 3),
+                FRDComponent::scalar("D4" , 4),
+                FRDComponent::scalar("D5" , 5),
+                FRDComponent::scalar("D6" , 6),
+                FRDComponent::vcnorm("ALL")
+            }
+        },
+        {
+            {"DISPLACEMENTIMAG"}, "DISPIMAG",
+            {
+                FRDComponent::vector("D1" , 1),
+                FRDComponent::vector("D2" , 2),
+                FRDComponent::vector("D3" , 3),
+                FRDComponent::scalar("D4" , 4),
+                FRDComponent::scalar("D5" , 5),
+                FRDComponent::scalar("D6" , 6),
+                FRDComponent::vcnorm("ALL")
+            }
+        },
+        {
             {"VELOCITY", "VELO"}, "VELO",
             {
                 FRDComponent::vector("V1" , 1),
@@ -288,7 +312,51 @@ const FRDField& frd_field(const std::string& field_name) {
             }
         },
         {
+            {"STRESSREAL"}, "STRREAL",
+            {
+                FRDComponent::tensor("SXX", 1, 1),
+                FRDComponent::tensor("SYY", 2, 2),
+                FRDComponent::tensor("SZZ", 3, 3),
+                FRDComponent::tensor("SYZ", 2, 3),
+                FRDComponent::tensor("SZX", 3, 1),
+                FRDComponent::tensor("SXY", 1, 2)
+            }
+        },
+        {
+            {"STRESSIMAG"}, "STRIMAG",
+            {
+                FRDComponent::tensor("SXX", 1, 1),
+                FRDComponent::tensor("SYY", 2, 2),
+                FRDComponent::tensor("SZZ", 3, 3),
+                FRDComponent::tensor("SYZ", 2, 3),
+                FRDComponent::tensor("SZX", 3, 1),
+                FRDComponent::tensor("SXY", 1, 2)
+            }
+        },
+        {
             {"STRAIN", "TOTALSTRAIN", "TOSTRAIN"}, "TOSTRAIN",
+            {
+                FRDComponent::tensor("EXX", 1, 1),
+                FRDComponent::tensor("EYY", 2, 2),
+                FRDComponent::tensor("EZZ", 3, 3),
+                FRDComponent::tensor("EYZ", 2, 3),
+                FRDComponent::tensor("EZX", 3, 1),
+                FRDComponent::tensor("EXY", 1, 2)
+            }
+        },
+        {
+            {"STRAINREAL"}, "STRNREAL",
+            {
+                FRDComponent::tensor("EXX", 1, 1),
+                FRDComponent::tensor("EYY", 2, 2),
+                FRDComponent::tensor("EZZ", 3, 3),
+                FRDComponent::tensor("EYZ", 2, 3),
+                FRDComponent::tensor("EZX", 3, 1),
+                FRDComponent::tensor("EXY", 1, 2)
+            }
+        },
+        {
+            {"STRAINIMAG"}, "STRNIMAG",
             {
                 FRDComponent::tensor("EXX", 1, 1),
                 FRDComponent::tensor("EYY", 2, 2),
@@ -648,6 +716,8 @@ void FrdWriter::write_nodes(const model::ModelData& model_data) {
  *
  * CalculiX requires different connectivity ordering for 20-node hexahedra and
  * 15-node wedges, so these two element families are reordered explicitly.
+ * Node-only models omit the connectivity block while retaining their nodal
+ * geometry and result fields.
  *
  * @param model_data Compiled model containing structural element topology.
  */
@@ -661,8 +731,10 @@ void FrdWriter::write_elements(const model::ModelData& model_data) {
         }
     }
 
-    logging::error(element_count > 0,
-        "FrdWriter: no supported elements found for FRD output");
+    // Keep node-only feature models valid without emitting an empty element block
+    if (element_count == 0) {
+        return;
+    }
 
     file_path << "    3C"
               << std::string(18, ' ')
