@@ -158,6 +158,15 @@ struct Model {
                                 Vec3 spring_constants,
                                 Vec3 rotary_spring_constants);
 
+    void add_pretension_interface_section(const std::string& name,
+                                          const std::string& surface_set_a,
+                                          const std::string& surface_set_b);
+    void prepare_pretension_sections();
+    void set_pretension_load(const std::string& name,
+                             pretension::Control control,
+                             Precision value);
+    void lock_pretension_section(const std::string& name);
+
     // Compiled element preparation and analysis lifecycle. Section assignment
     // binds compiled elements to their section definitions, and shell-normal
     // construction prepares element-nodal reference geometry. step_begin() and
@@ -182,6 +191,9 @@ struct Model {
     Field build_load_matrix(
         std::vector<std::string> load_sets = {},
         Precision time = 0);
+    Field build_pretension_force_matrix();
+    Field build_pretension_gap_matrix(const Field& displacement);
+    void capture_pretension_gaps(const Field& displacement);
     constraint::ConstraintGroups collect_constraints(
         SystemDofIds& system_dof_ids,
         const std::vector<std::string>& supp_sets = {});

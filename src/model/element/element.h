@@ -60,6 +60,7 @@ struct ElementInterface {
 
     virtual SurfacePtr surface(ID) { return nullptr; }
     virtual LinePtr line(ID) { return nullptr; }
+    virtual bool replace_node(ID, ID) { return false; }
 
     virtual std::string type_name() const { return std::string{}; }
 

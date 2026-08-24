@@ -332,6 +332,8 @@ void Model::compile() {
     _data->elements.assign(static_cast<std::size_t>(total_elements), nullptr);
     _data->surfaces.assign(static_cast<std::size_t>(total_surfaces), nullptr);
     _data->lines   .assign(static_cast<std::size_t>(total_lines), nullptr);
+    _data->surface_element_ids.assign(static_cast<std::size_t>(total_surfaces), ID(-1));
+    _data->surface_local_ids.assign(static_cast<std::size_t>(total_surfaces), ID(-1));
     _data->sections.clear();
 
     // node mapping to map back to instance + local id
@@ -511,6 +513,19 @@ void Model::compile() {
             }
 
             _data->surfaces[static_cast<std::size_t>(global_id)] = std::move(surface);
+            const auto owner_it = source->surface_element_ids.find(local_id);
+            if (owner_it != source->surface_element_ids.end()) {
+                const auto compiled_owner = element_map.find(owner_it->second);
+                if (compiled_owner != element_map.end()) {
+                    _data->surface_element_ids[static_cast<std::size_t>(global_id)] =
+                        compiled_owner->second;
+                }
+            }
+            const auto local_side = source->surface_local_ids.find(local_id);
+            if (local_side != source->surface_local_ids.end()) {
+                _data->surface_local_ids[static_cast<std::size_t>(global_id)] =
+                    local_side->second;
+            }
             _data->surface_sets.all()->add(global_id);
             surface_map.emplace(local_id, global_id);
         }

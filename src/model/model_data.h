@@ -47,6 +47,7 @@
 #include "../material/material.h"
 #include "../section/profile.h"
 #include "../section/section.h"
+#include "../section/pretension_section.h"
 #include "instance.h"
 
 #include <string>
@@ -101,10 +102,16 @@ struct ModelData {
     std::vector<ElementPtr> elements;
     std::vector<SurfacePtr> surfaces;
     std::vector<LinePtr>    lines;
+    std::vector<ID>         surface_element_ids;
+    std::vector<ID>         surface_local_ids;
+
+    // Post-compile node duplication used to separate a merged face pair.
+    ID append_node(const Vec3& position);
 
     // Assembly section assignments and shared non-topological definitions.
     // Features contribute matrices or loads outside regular element topology.
     std::vector<Section::Ptr>          sections;
+    std::vector<pretension::PretensionSection::Ptr> pretension_sections;
     Dict<Profile>                      profiles;
     std::vector<feature::Feature::Ptr> features;
 
