@@ -18,17 +18,74 @@
 #include "tools/rebalance_loads.h"
 
 #include <algorithm>
+#include <chrono>
 #include <iomanip>
 #include <limits>
+#include <string_view>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace fem {
 namespace loadcase {
 
 using constraint::ConstraintTransformer;
 
+namespace {
+
+class LinearStaticTiming {
+public:
+    LinearStaticTiming() : start_(Clock::now()), phase_start_(start_) {}
+
+    void finish_phase(std::string_view name) {
+        const auto now = Clock::now();
+        phases_.push_back({name, elapsed_ms(phase_start_, now)});
+        phase_start_ = now;
+    }
+
+    void print() const {
+        const auto total = elapsed_ms(start_, Clock::now());
+
+        logging::info(true, "");
+        logging::info(true, "Linear static timing summary");
+        logging::up();
+        for (const auto& phase : phases_) {
+            const double share = total > 0.0 ? 100.0 * phase.milliseconds / total : 0.0;
+            logging::info(true,
+                std::setw(34), std::left, phase.name,
+                ": ", std::setw(10), std::right, std::fixed, std::setprecision(3),
+                phase.milliseconds, " ms  (",
+                std::setw(6), std::setprecision(2), share, " %)");
+        }
+        logging::info(true,
+            std::setw(34), std::left, "total",
+            ": ", std::setw(10), std::right, std::fixed, std::setprecision(3),
+            total, " ms");
+        logging::down();
+    }
+
+private:
+    using Clock = std::chrono::steady_clock;
+
+    struct Phase {
+        std::string_view name;
+        double milliseconds;
+    };
+
+    static double elapsed_ms(Clock::time_point begin, Clock::time_point end) {
+        return std::chrono::duration<double, std::milli>(end - begin).count();
+    }
+
+    Clock::time_point start_;
+    Clock::time_point phase_start_;
+    std::vector<Phase> phases_;
+};
+
+} // namespace
+
 void LinearStatic::run() {
+    LinearStaticTiming timing;
+
     logging::info(true, "");
     logging::info(true, "");
     logging::info(true, "===============================================================================================");
@@ -82,12 +139,16 @@ void LinearStatic::run() {
             "rebalancing of loads");
     }
 
+    timing.finish_phase("load + DOF preparation");
+
     auto groups = Timer::measure(
         [&]() { return model->collect_constraints(active_dof_idx_mat, supps); },
         "building constraints");
 
     report_constraint_groups(groups);
     auto equations = groups.flatten();
+
+    timing.finish_phase("constraint collection");
 
     auto K = Timer::measure(
         [&]() { return model->build_stiffness_matrix(active_dof_idx_mat); },
@@ -96,6 +157,8 @@ void LinearStatic::run() {
     auto f = Timer::measure(
         [&]() { return mattools::reduce_mat_to_vec(active_dof_idx_mat, global_load_mat); },
         "reducing load matrix -> active RHS vector f");
+
+    timing.finish_phase("stiffness + RHS assembly");
 
     if (constraint_method == ConstraintTransformer::Method::Lagrange && method == solver::INDIRECT) {
         logging::error(false,
@@ -157,9 +220,13 @@ void LinearStatic::run() {
         model->_data->rbms.pop_back();
     }
 
+    timing.finish_phase("constraint transformer setup");
+
     auto A = Timer::measure(
         [&]() { return transformer->assemble_system_matrix(K); },
         "assembling constraint system matrix");
+
+    timing.finish_phase("reduced matrix assembly");
 
     auto b = Timer::measure(
         [&]() { return transformer->assemble_system_rhs(K, f); },
@@ -182,9 +249,13 @@ void LinearStatic::run() {
             "b contains NaN/Inf entries");
     }
 
+    timing.finish_phase("reduced RHS + validation");
+
     auto q = Timer::measure(
         [&]() { return solve(device, method, A, b, direct_matrix_type); },
         "solving constraint system");
+
+    timing.finish_phase("linear system solve");
 
     auto u = Timer::measure(
         [&]() { return transformer->recover_displacement(q); },
@@ -206,6 +277,8 @@ void LinearStatic::run() {
     auto global_react_mat = Timer::measure(
         [&]() { return mattools::expand_vec_to_mat(active_dof_idx_mat, r_support); },
         "expanding support reactions to matrix form");
+
+    timing.finish_phase("recovery + reactions");
 
     auto section_forces = Timer::measure(
         [&]() { return model->compute_section_forces(global_disp_mat); },
@@ -265,14 +338,30 @@ void LinearStatic::run() {
     auto pretension_force = model->build_pretension_force_matrix();
     auto pretension_gap = model->build_pretension_gap_matrix(global_disp_mat);
 
+    timing.finish_phase("result field preparation");
+
     Timer::measure(
         [&]() {
             writer->add_loadcase(id, io::writer::WriterStepType::Static);
+        },
+        "initializing result loadcase");
+
+    timing.finish_phase("result output setup");
+
+    Timer::measure(
+        [&]() {
             writer->write_field(global_disp_mat , "DISPLACEMENT", model->_data.get());
             writer->write_field(strain          , "STRAIN", model->_data.get());
             writer->write_field(stress          , "STRESS", model->_data.get());
             writer->write_field(stress_top      , "STRESS_TOP", model->_data.get());
             writer->write_field(stress_bot      , "STRESS_BOT", model->_data.get());
+        },
+        "writing primary result fields");
+
+    timing.finish_phase("primary result output");
+
+    Timer::measure(
+        [&]() {
             writer->write_field(shell_resultants, "SHELL_RESULTANTS", model->_data.get());
             writer->write_field(global_load_mat , "EXTERNAL_FORCES", model->_data.get());
             writer->write_field(pretension_force, "PTFORC", model->_data.get());
@@ -283,11 +372,16 @@ void LinearStatic::run() {
                 writer->write_field(shear_flow, "SHEAR_FLOW", model->_data.get());
             }
         },
-        "writing result fields");
+        "writing auxiliary result fields");
+
+    timing.finish_phase("auxiliary result output");
 
     transformer->post_check_static(K, f, q);
     model->capture_pretension_gaps(global_disp_mat);
     model->step_end();
+
+    timing.finish_phase("checks + finalization");
+    timing.print();
 }
 
 } // namespace loadcase
