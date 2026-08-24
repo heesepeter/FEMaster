@@ -294,6 +294,9 @@ void LinearStatic::run() {
         "REACTION_FORCES"
     );
 
+    auto pretension_force = model->build_pretension_force_matrix();
+    auto pretension_gap = model->build_pretension_gap_matrix(global_disp_mat);
+
     Timer::measure(
         [&]() {
             using io::writer::OutputField;
@@ -314,10 +317,15 @@ void LinearStatic::run() {
             }
 
             output.write_frame(*writer, model->_data.get());
+            if (!model->_data->pretension_sections.empty()) {
+                writer->write_field(pretension_force, "PTFORC", model->_data.get());
+                writer->write_field(pretension_gap, "PTGAP", model->_data.get());
+            }
         },
         "resolving and writing requested result fields");
 
     transformer->post_check_static(K, f, q);
+    model->capture_pretension_gaps(global_disp_mat);
     model->step_end();
 }
 
