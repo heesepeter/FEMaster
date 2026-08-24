@@ -32,6 +32,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace fem {
 namespace io { namespace dsl { class File; struct Line; } }
@@ -101,6 +102,14 @@ class Parser {
     loadcase::LoadCase::Ptr active_loadcase_;
     int                     next_loadcase_id_ = 1;
 
+    struct PretensionAction {
+        std::string section;
+        std::string action;
+        std::string control;
+        Precision   value = 0;
+    };
+    std::vector<PretensionAction> queued_pretension_actions_;
+
 public:
     // Construction
     Parser();
@@ -122,6 +131,10 @@ public:
     void                begin_loadcase(loadcase::LoadCase::Ptr loadcase);
     void                end_loadcase();
     loadcase::LoadCase* active_loadcase();
+    void queue_pretension_action(const std::string& section,
+                                 const std::string& action,
+                                 const std::string& control,
+                                 Precision value);
 
 protected:
     // Per-pass command activation. Derived deck readers may change which
@@ -136,6 +149,7 @@ private:
     void run_definition_pass(const std::string& input_path);
     void run_topology_pass  (const std::string& input_path);
     void run_assembly_pass  (const std::string& input_path);
+    void run_field_pass     (const std::string& input_path);
     void run_analysis_pass  (const std::string&                   input_path,
                              const std::string&                   output_path,
                              const io::writer::WriterFileFormats& writer_formats);

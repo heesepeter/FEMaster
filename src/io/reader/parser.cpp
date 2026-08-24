@@ -61,6 +61,7 @@
 #include "commands/register_part.inl"
 #include "commands/register_pload.inl"
 #include "commands/register_point_mass.inl"
+#include "commands/register_pretension.inl"
 #include "commands/register_profile.inl"
 #include "commands/register_rbm.inl"
 #include "commands/register_sfset.inl"
@@ -137,6 +138,7 @@ void Parser::run(const std::string& input_path,
     // Reset all mutable state so each run represents an independent deck
     model_ = std::make_shared<model::Model>();
     active_loadcase_.reset();
+    queued_pretension_actions_.clear();
     next_loadcase_id_ = 1;
 
     // Collect shared definitions before sections resolve their dependencies
@@ -150,6 +152,18 @@ void Parser::run(const std::string& input_path,
 
     // Materialize post-compile regions, fields and shell reference normals
     run_assembly_pass(input_path);
+
+    // Pretension may grow the compiled topology. Rebuild enumeration before
+    // allocating any user fields on the final domains.
+    model_->prepare_pretension_sections();
+    model_->assign_sections();
+    model_->_data->element_nodal_offsets.reset();
+    model_->_data->element_ip_offsets.reset();
+    model_->_data->element_mp_offsets.reset();
+    model_->_data->material_state.reset();
+    model_->_data->initialize_element_enumeration();
+    run_field_pass(input_path);
+    model_->build_shell_element_normals();
 
     // Execute loads, constraints and load cases against the completed assembly
     run_analysis_pass(input_path, output_path, writer_formats);
@@ -252,7 +266,25 @@ void Parser::end_loadcase() {
         "Parser: cannot end a load case when none is active");
 
     auto loadcase = std::move(active_loadcase_);
+    for (const auto& action : queued_pretension_actions_) {
+        if (action.action == "LOCK") {
+            model_->lock_pretension_section(action.section);
+        } else {
+            const auto control = action.control == "FORCE"
+                ? pretension::Control::Force
+                : pretension::Control::Displacement;
+            model_->set_pretension_load(action.section, control, action.value);
+        }
+    }
+    queued_pretension_actions_.clear();
     loadcase->run();
+}
+
+void Parser::queue_pretension_action(const std::string& section,
+                                     const std::string& action,
+                                     const std::string& control,
+                                     Precision value) {
+    queued_pretension_actions_.push_back({section, action, control, value});
 }
 
 /**
@@ -319,8 +351,17 @@ void Parser::run_assembly_pass(const std::string& input_path) {
     io::dsl::Engine engine(registry);
     engine.run(file);
 
-    // Complete solver-facing shell reference data before any load case executes
-    model_->build_shell_element_normals();
+}
+
+void Parser::run_field_pass(const std::string& input_path) {
+    io::dsl::Registry registry;
+    register_commands(registry);
+    registry.set_active_mode(io::dsl::ActiveMode::ConsumeOnly);
+    registry.set_active_mode("FIELD", io::dsl::ActiveMode::Active);
+    registry.set_active_mode("NORMAL", io::dsl::ActiveMode::Active);
+    io::dsl::File file(input_path);
+    io::dsl::Engine engine(registry);
+    engine.run(file);
 }
 
 /**
@@ -431,7 +472,8 @@ void Parser::configure_assembly_pass(io::dsl::Registry& registry) {
 
     // Activate post-compile assembly and field materialization commands
     for (const char* command : {
-        "ASSEMBLY", "ENDASSEMBLY", "NSET", "ELSET", "SURFACE", "SFSET", "FIELD", "NORMAL"
+        "ASSEMBLY", "ENDASSEMBLY", "NSET", "ELSET", "SURFACE", "SFSET",
+        "PRETENSIONSECTION"
     }) {
         registry.set_active_mode(command, io::dsl::ActiveMode::Active);
     }
@@ -458,7 +500,7 @@ void Parser::configure_analysis_pass(io::dsl::Registry& registry) {
         "NODE", "ELEMENT", "NSET", "ELSET", "SURFACE", "SFSET",
         "MATERIAL", "ELASTIC", "HYPERELASTIC", "DENSITY", "THERMALEXPANSION",
         "PROFILE", "ORIENTATION", "SOLIDSECTION", "BEAMSECTION", "TRUSSSECTION",
-        "SHELLSECTION", "FIELD", "NORMAL"
+        "SHELLSECTION", "FIELD", "NORMAL", "PRETENSIONSECTION"
     }) {
         registry.set_active_mode(command, io::dsl::ActiveMode::ConsumeOnly);
     }
@@ -555,6 +597,8 @@ void Parser::register_commands(io::dsl::Registry& registry) {
     commands::register_tie(registry, mdl);
     commands::register_contact(registry, mdl);
     commands::register_point_mass(registry, mdl);
+    commands::register_pretension_section(registry, mdl);
+    commands::register_pretension(registry, mdl, *this);
     commands::register_overview(registry, mdl);
 
     // Register load-case creation, solver settings and result requests

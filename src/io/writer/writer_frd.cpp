@@ -196,6 +196,21 @@ const FRDField& frd_field(const std::string& field_name) {
 
     static const std::vector<FRDField> definitions{
         {
+            {"PRETENSION_GAP", "PTGAP"}, "PTGAP",
+            {
+                FRDComponent::scalar("GAP", 1)
+            }
+        },
+        {
+            {"PRETENSION_FORCE", "PTFORC"}, "PTFORC",
+            {
+                FRDComponent::vector("F1", 1),
+                FRDComponent::vector("F2", 2),
+                FRDComponent::vector("F3", 3),
+                FRDComponent::vcnorm("ALL")
+            }
+        },
+        {
             {"DISPLACEMENT", "DISP", "MODESHAPE", "BUCKLINGMODE"}, "DISP",
             {
                 FRDComponent::vector("D1" , 1),
