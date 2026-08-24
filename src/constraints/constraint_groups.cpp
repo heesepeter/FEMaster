@@ -26,6 +26,7 @@ void ConstraintGroups::report() const {
         {"Couplings", couplings},
         {"Ties", ties},
         {"RBMs", rbms},
+        {"Pretensions", pretensions},
         {"Other", others},
     };
 

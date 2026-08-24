@@ -24,6 +24,7 @@
 
 #include "../mattools/assemble.h"
 #include "../mattools/numerate_dofs.h"
+#include "../constraints/types/pretension.h"
 #include "element/element_structural.h"
 #include "model.h"
 #include "solid/element_solid.h"
@@ -304,6 +305,13 @@ Field Model::build_load_matrix(std::vector<std::string> load_sets, Precision tim
         coupling.apply_loads(*_data, load_matrix);
     }
 
+    const Field pretension_force = build_pretension_force_matrix();
+    for (Index node = 0; node < load_matrix.rows; ++node) {
+        for (Dim component = 0; component < 3; ++component) {
+            load_matrix(node, component) += pretension_force(node, component);
+        }
+    }
+
     return load_matrix;
 }
 
@@ -450,6 +458,19 @@ constraint::ConstraintGroups Model::collect_constraints(
             groups.rbms.push_back(std::move(eq));
         }
         ++rbm_idx;
+    }
+
+    Index pretension_idx = 0;
+    for (auto& section : _data->pretension_sections) {
+        if (!section) continue;
+        auto equations = constraint::get_pretension_equations(
+            system_dof_ids, *_data, *section);
+        for (auto& equation : equations) {
+            equation.source = constraint::EquationSourceKind::Manual;
+            equation.source_index = pretension_idx;
+            groups.pretensions.push_back(std::move(equation));
+        }
+        ++pretension_idx;
     }
 
     // Preserve explicit equations as manual or otherwise categorized rows
