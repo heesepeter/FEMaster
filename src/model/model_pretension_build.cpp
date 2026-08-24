@@ -40,11 +40,8 @@ Field Model::build_pretension_gap_matrix(const Field& displacement) {
                 displacement.row_vec3(static_cast<Index>(pair.side_b)) -
                 displacement.row_vec3(static_cast<Index>(pair.side_a));
             const Precision measured = axis.dot(relative);
-            const Precision value = section->control == pretension::Control::Displacement
-                ? (section->state == pretension::State::Locked
-                    ? section->locked_gap : section->prescribed_value)
-                : measured;
-            gap(static_cast<Index>(pair.side_a), 0) = value;
+            gap(static_cast<Index>(pair.side_a), 0) = measured;
+            gap(static_cast<Index>(pair.side_b), 0) = measured;
         }
     }
     return gap;
