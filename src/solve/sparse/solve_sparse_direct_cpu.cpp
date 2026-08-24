@@ -1,182 +1,169 @@
+/**
+ * @file solve_sparse_direct_cpu.cpp
+ * @brief Implements CPU sparse direct solves for the FEMaster solver subsystem.
+ *
+ * General sparse systems are solved with LU factorization, while symmetric
+ * systems use LDLT. The concrete CPU backend is selected at compile time:
+ * Intel oneMKL uses PARDISO, Apple Accelerate is used for symmetric sparse
+ * systems, and the portable fallback uses Eigen's native sparse solvers.
+ *
+ * Accelerate-enabled builds retain Eigen SparseLU for general nonsymmetric
+ * matrices because Eigen only exposes Accelerate wrappers for symmetric and QR
+ * factorizations. This keeps the general solve path portable across Apple SDK
+ * versions while still accelerating the dominant symmetric FEM systems.
+ *
+ * Failed primary factorizations fall back to Eigen SparseQR so the established
+ * FEMaster recovery behavior is preserved across all CPU backends.
+ *
+ * @author Finn Eggers
+ * @date 23.08.2026
+ */
+
 #include "solve_sparse_direct.h"
 
 #include "../../core/logging.h"
 #include "../../core/timer.h"
-#include "../../core/config.h"
 
-#include <Eigen/SparseCholesky>
 #include <Eigen/SparseLU>
 #include <Eigen/SparseQR>
 
-#ifdef USE_ACCELERATE_SPARSE
-#include <Accelerate/Accelerate.h>
-#include <vector>
-#endif
-
-#ifdef USE_MKL
+#if defined(USE_MKL)
+#include "../../core/config.h"
+#include <Eigen/PardisoSupport>
 #include <mkl.h>
+#elif defined(USE_ACCELERATE)
+#include <Eigen/AccelerateSupport>
+#else
+#include <Eigen/SparseCholesky>
 #endif
 
 namespace fem::solver::detail {
 
-#ifdef USE_ACCELERATE_SPARSE
-namespace {
-
-bool solve_accelerate_spd(SparseMatrix& mat,
-                          const DynamicMatrix& rhs,
-                          DynamicMatrix& solution) {
-    mat.makeCompressed();
-
-    std::vector<long> column_starts(static_cast<std::size_t>(mat.cols()) + 1, 0);
-    std::vector<int> row_indices;
-    std::vector<double> values;
-    row_indices.reserve(static_cast<std::size_t>(mat.nonZeros() / 2 + mat.rows()));
-    values.reserve(row_indices.capacity());
-
-    for (int column = 0; column < mat.outerSize(); ++column) {
-        column_starts[static_cast<std::size_t>(column)] =
-            static_cast<long>(row_indices.size());
-        for (SparseMatrix::InnerIterator entry(mat, column); entry; ++entry) {
-            if (entry.row() < column) continue;
-            row_indices.push_back(entry.row());
-            values.push_back(entry.value());
-        }
-    }
-    column_starts.back() = static_cast<long>(row_indices.size());
-
-    SparseAttributes_t attributes{};
-    attributes.transpose = false;
-    attributes.triangle = SparseLowerTriangle;
-    attributes.kind = SparseSymmetric;
-
-    SparseMatrixStructure structure{
-        static_cast<int>(mat.rows()),
-        static_cast<int>(mat.cols()),
-        column_starts.data(),
-        row_indices.data(),
-        attributes,
-        1
-    };
-    SparseMatrix_Double matrix{structure, values.data()};
-    SparseOpaqueFactorization_Double factor =
-        SparseFactor(SparseFactorizationCholesky, matrix);
-
-    if (factor.status < SparseStatusOK) {
-        SparseCleanup(factor);
-        return false;
-    }
-
-    solution = rhs;
-    DenseMatrix_Double dense{
-        static_cast<int>(solution.rows()),
-        static_cast<int>(solution.cols()),
-        static_cast<int>(solution.outerStride()),
-        SparseAttributes_t{},
-        solution.data()
-    };
-    SparseSolve(factor, dense);
-    SparseCleanup(factor);
-    return solution.allFinite();
-}
-
-} // namespace
-#endif
-
-DynamicMatrix solve_direct_cpu(SparseMatrix& mat,
-                               const DynamicMatrix& rhs,
-                               DirectSolverMatrixType matrix_type) {
-    Timer t {};
+/**
+ * Solves a sparse linear system on the CPU using the configured direct backend.
+ *
+ * General matrices are factorized with LU. Symmetric matrices are factorized
+ * with LDLT so the solver can exploit their structure while still supporting
+ * indefinite finite-element systems. If the selected factorization or solve
+ * fails, Eigen SparseQR is used as the common recovery path.
+ *
+ * Accelerate-enabled builds use Eigen SparseLU for general matrices and
+ * AccelerateLDLT for symmetric matrices. The latter delegates the factorization
+ * and solve to Apple's sparse solver implementation while preserving Eigen's
+ * sparse matrix interface.
+ *
+ * @param mat Sparse system matrix. Accelerate may compress its storage in place
+ *            without changing its numerical entries.
+ * @param rhs Dense right-hand-side matrix. Multiple columns are solved together.
+ * @param matrix_type Structural matrix type used to select LU or LDLT.
+ * @return Dense matrix containing the solution columns.
+ */
+DynamicMatrix solve_direct_cpu(SparseMatrix& mat, const DynamicMatrix& rhs, DirectSolverMatrixType matrix_type) {
+    Timer t{};
     t.start();
 
+    // General matrices require an LU factorization because no symmetry can be assumed
     if (matrix_type == DirectSolverMatrixType::General) {
-        DynamicMatrix sol;
+        DynamicMatrix sol{};
+        bool          success = false;
 
-#ifdef USE_MKL
-        logging::info(true, "Using MKL PardisoLU solver");
-        Eigen::PardisoLU<SparseMatrix> solver {};
+#if defined(USE_MKL)
+        // Factorize and solve the general system with PARDISO LU
+        Eigen::PardisoLU<SparseMatrix> solver{};
         solver.compute(mat);
+
         if (solver.info() == Eigen::Success) {
-            sol = solver.solve(rhs);
+            sol     = solver.solve(rhs);
+            success = solver.info() == Eigen::Success;
         }
 #else
-        logging::info(true, "Using Eigen SparseLU solver");
-        Eigen::SparseLU<SparseMatrix, Eigen::COLAMDOrdering<int>> solver {};
+        // Keep the portable Eigen LU path for general matrices on Apple and fallback builds
+        Eigen::SparseLU<SparseMatrix, Eigen::COLAMDOrdering<int>> solver{};
         solver.compute(mat);
+
         if (solver.info() == Eigen::Success) {
-            sol = solver.solve(rhs);
+            sol     = solver.solve(rhs);
+            success = solver.info() == Eigen::Success;
         }
 #endif
 
-        if (solver.info() != Eigen::Success) {
-            logging::warning(false,
-                "General sparse LU failed; falling back to SparseQR");
+        // Recover from a failed LU factorization or solve with the common QR fallback
+        if (!success) {
+            logging::warning(false, "General sparse LU failed; falling back to SparseQR");
+
             Eigen::SparseQR<SparseMatrix, Eigen::COLAMDOrdering<int>> qr(mat);
             qr.compute(mat);
             sol = qr.solve(rhs);
+
             logging::error(qr.info() == Eigen::Success,
-                           "Solving general sparse system failed with SparseQR");
+                "Solving general sparse system failed with SparseQR");
         }
 
+        // Report the solve time and relative residual
         t.stop();
         logging::info(true, "Solving finished");
-        logging::info(true, "Elapsed time: " + std::to_string(t.elapsed()) + " ms");
-        logging::info(true, "residual    : ", (rhs - mat * sol).norm() / rhs.norm());
+        logging::info(true, "Elapsed time : ", t.elapsed(), " ms");
+        logging::info(true, "Residual     : ", (rhs - mat * sol).norm() / rhs.norm());
         return sol;
     }
 
-#ifdef USE_MKL
+    // Symmetric systems use LDLT so the factorization can exploit matrix symmetry
+    DynamicMatrix sol{};
+    bool          success = false;
+
+#if defined(USE_MKL)
+    // Configure PARDISO threading from the global FEMaster solver configuration
     mkl_set_num_threads(global_config.max_threads);
-    int mkl_max_threads = mkl_get_max_threads();
-    logging::info(true, "MKL max threads: ", mkl_max_threads);
+    const int mkl_max_threads = mkl_get_max_threads();
 
-    logging::info(true, "Using MKL PardisoLDLT solver");
-    Eigen::PardisoLDLT<SparseMatrix> solver {};
+    logging::info(true, "MKL max threads          : ", mkl_max_threads);
 
+    Eigen::PardisoLDLT<SparseMatrix> solver{};
     solver.compute(mat);
-    logging::warning(solver.info() == Eigen::Success, "Decomposition failed with PardisoLDLT");
-    DynamicMatrix sol = solver.solve(rhs);
 
-    if (solver.info() != Eigen::Success) {
-        logging::warning(true, "Solving failed with PardisoLDLT");
-        Eigen::SparseQR<SparseMatrix, Eigen::COLAMDOrdering<int>> qr(mat);
-        qr.compute(mat);
-        sol = qr.solve(rhs);
-        logging::error(qr.info() == Eigen::Success, "Solving failed with SparseQR");
+    if (solver.info() == Eigen::Success) {
+        sol     = solver.solve(rhs);
+        success = solver.info() == Eigen::Success;
     }
-#elif defined(USE_ACCELERATE_SPARSE)
-    logging::info(true, "Using Apple Accelerate sparse Cholesky solver");
-    DynamicMatrix sol;
-    if (!solve_accelerate_spd(mat, rhs, sol)) {
-        logging::warning(true,
-            "Accelerate sparse Cholesky failed; falling back to Eigen SparseQR");
-        Eigen::SparseQR<SparseMatrix, Eigen::COLAMDOrdering<int>> qr(mat);
-        qr.compute(mat);
-        sol = qr.solve(rhs);
-        logging::error(qr.info() == Eigen::Success,
-                       "Solving failed with SparseQR");
+#elif defined(USE_ACCELERATE)
+    // Eigen exposes Accelerate's symmetric sparse factorization directly
+    mat.makeCompressed();
+
+    Eigen::AccelerateLDLT<SparseMatrix> solver{};
+    solver.compute(mat);
+
+    if (solver.info() == Eigen::Success) {
+        sol     = solver.solve(rhs);
+        success = solver.info() == Eigen::Success;
     }
 #else
-    logging::info(true, "Using Eigen SimplicialLDLT solver");
-
-    Eigen::SimplicialLDLT<SparseMatrix> solver {};
+    // Use Eigen's portable symmetric factorization when no native backend is enabled
+    Eigen::SimplicialLDLT<SparseMatrix> solver{};
     solver.compute(mat);
-    DynamicMatrix sol;
+
     if (solver.info() == Eigen::Success) {
-        sol = solver.solve(rhs);
-    }
-    if (solver.info() != Eigen::Success) {
-        logging::warning(true, "SimplicialLDLT failed; falling back to SparseQR");
-        Eigen::SparseQR<SparseMatrix, Eigen::COLAMDOrdering<int>> qr(mat);
-        qr.compute(mat);
-        sol = qr.solve(rhs);
-        logging::error(qr.info() == Eigen::Success, "Solving failed with SparseQR");
+        sol     = solver.solve(rhs);
+        success = solver.info() == Eigen::Success;
     }
 #endif
 
+    // Recover from a failed LDLT factorization or solve with the common QR fallback
+    if (!success) {
+        logging::warning(false, "Sparse LDLT failed; falling back to SparseQR");
+
+        Eigen::SparseQR<SparseMatrix, Eigen::COLAMDOrdering<int>> qr(mat);
+        qr.compute(mat);
+        sol = qr.solve(rhs);
+
+        logging::error(qr.info() == Eigen::Success,
+            "Solving sparse system failed with SparseQR");
+    }
+
+    // Report the solve time and relative residual
     t.stop();
     logging::info(true, "Solving finished");
-    logging::info(true, "Elapsed time: " + std::to_string(t.elapsed()) + " ms");
-    logging::info(true, "residual    : ", (rhs - mat * sol).norm() / (rhs.norm()));
+    logging::info(true, "Elapsed time : ", t.elapsed(), " ms");
+    logging::info(true, "Residual     : ", (rhs - mat * sol).norm() / rhs.norm());
 
     return sol;
 }
