@@ -111,7 +111,10 @@ public:
         // Relative regularization applied to the diagonal of the Lagrange
         // multiplier block. The effective value is scaled with a characteristic
         // stiffness extracted from the supplied system matrix.
-        Precision lagrange_regularization{Precision(1e-10)};
+        // Prescribed pretension gaps require exact Lagrange constraints.
+        // Regularizing the multiplier block changes C*u=d and therefore the
+        // requested relative displacement.
+        Precision lagrange_regularization{Precision(0)};
     };
 
 private:
@@ -319,4 +322,3 @@ private:
 
 } // namespace constraint
 } // namespace fem
-

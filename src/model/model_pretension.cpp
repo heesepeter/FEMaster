@@ -13,8 +13,6 @@ void Model::add_pretension_interface_section(const std::string& name,
                                              const std::string& surface_set_a,
                                              const std::string& surface_set_b) {
     logging::error(!name.empty(), "PRETENSION SECTION: name must not be empty");
-    logging::error(surface_set_a != surface_set_b,
-        "PRETENSION SECTION: SURFACE_A and SURFACE_B must differ");
     logging::error(_data->surface_sets.has(surface_set_a),
         "PRETENSION SECTION: surface set ", surface_set_a, " does not exist");
     logging::error(_data->surface_sets.has(surface_set_b),
@@ -103,7 +101,7 @@ void prepare_surface_pair(ModelData& data,
         }
         logging::error(best >= 0 && distance_best <= tolerance,
             "PRETENSION SECTION '", section.name,
-            "': circle-face nodes cannot be paired within tolerance ", tolerance);
+            "': interface nodes cannot be paired within tolerance ", tolerance);
         pairs.emplace(node_a, best);
         unused_b.erase(best);
     }
@@ -201,7 +199,7 @@ void prepare_surface_pair(ModelData& data,
     section.axis_origin = (center_a + center_b) * Precision(0.5);
     logging::info(true, "PRETENSIONSECTION '", section.name,
         "': paired ", section.interface_pairs.size(),
-        " circle-face node(s), split ", shared_nodes.size(), " shared node(s)");
+        " interface node(s), split ", shared_nodes.size(), " shared node(s)");
 }
 
 } // namespace

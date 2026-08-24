@@ -20,7 +20,9 @@ inline void register_pretension_section(
     model::Model& model) {
     registry.command("PRETENSIONSECTION", [&](fem::io::dsl::Command& command) {
         command.allow_if(fem::io::dsl::Condition::parent_is("ROOT"));
-        command.doc("Define a pretension section between two existing face sets.");
+        command.doc(
+            "Define a pretension section using one merged interface face "
+            "or two existing face sets.");
 
         command.keyword(
             fem::io::dsl::KeywordSpec::make()
@@ -31,8 +33,8 @@ inline void register_pretension_section(
                     .required()
                     .doc("First existing interface face set")
                 .key("SURFACE_B")
-                    .required()
-                    .doc("Second existing interface face set"));
+                    .optional("")
+                    .doc("Second interface face set; omit for a merged interface"));
 
         auto name = std::make_shared<std::string>();
         auto surface_a = std::make_shared<std::string>();
@@ -42,6 +44,7 @@ inline void register_pretension_section(
             *name = keys.raw("NAME");
             *surface_a = keys.raw("SURFACE_A");
             *surface_b = keys.raw("SURFACE_B");
+            if (surface_b->empty()) *surface_b = *surface_a;
         });
 
         command.on_exit([&model, name, surface_a, surface_b](const fem::io::dsl::Keys&) {
@@ -62,7 +65,7 @@ inline void register_pretension_section_count(
             fem::io::dsl::KeywordSpec::make()
                 .key("NAME").required()
                 .key("SURFACE_A").required()
-                .key("SURFACE_B").required());
+                .key("SURFACE_B").optional(""));
 
         command.on_exit([sink](const fem::io::dsl::Keys&) {
             sink();
