@@ -533,6 +533,13 @@ if(FEMASTER_BUILD_TESTS)
 
     include(GoogleTest)
     gtest_discover_tests(FEMaster_test)
+
+    add_test(NAME Pretension_FacePair_Loadsteps
+        COMMAND ${CMAKE_COMMAND}
+            -DFEMASTER_EXECUTABLE=$<TARGET_FILE:FEMaster>
+            -DFEMASTER_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DFEMASTER_TEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/pretension_face_pair_ctest
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_pretension_face_pair.cmake)
 endif()
 
 # -----------------------------------------------------------------------------
