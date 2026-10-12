@@ -75,6 +75,9 @@ enum class OutputField : std::uint8_t {
     ORIENTATION_GRAD,
     ORIENTATION,
 
+    PTFORC,
+    PTGAP,
+
     COUNT
 };
 

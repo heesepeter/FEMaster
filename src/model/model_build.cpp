@@ -345,10 +345,12 @@ Field Model::build_load_matrix(Precision time, Precision step_progress) {
         coupling.apply_loads(*_data, load_matrix);
     }
 
-    const Field pretension_force = build_pretension_force_matrix();
-    for (Index node = 0; node < load_matrix.rows; ++node) {
-        for (Dim component = 0; component < 3; ++component) {
-            load_matrix(node, component) += pretension_force(node, component);
+    if (!_data->pretension_sections.empty()) {
+        const Field pretension_force = build_pretension_force_matrix();
+        for (Index node = 0; node < load_matrix.rows; ++node) {
+            for (Dim component = 0; component < 3; ++component) {
+                load_matrix(node, component) += pretension_force(node, component);
+            }
         }
     }
 

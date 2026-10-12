@@ -1,6 +1,9 @@
-// register_pretension.inl - registers *PRETENSIONSECTION
+// Native face-pair pretension definitions and linear-static step actions.
 
-#include <functional>
+#include "register_functions.h"
+#include "../parser.h"
+#include "../../dsl/registry.h"
+
 #include <memory>
 #include <string>
 
@@ -13,9 +16,7 @@ namespace fem::io::reader { class Parser; }
 
 namespace fem::io::reader::commands {
 
-using PretensionSectionCountSink = std::function<void()>;
-
-inline void register_pretension_section(
+void register_pretension_section(
     fem::io::dsl::Registry& registry,
     model::Model& model) {
     registry.command("PRETENSIONSECTION", [&](fem::io::dsl::Command& command) {
@@ -55,27 +56,7 @@ inline void register_pretension_section(
     });
 }
 
-inline void register_pretension_section_count(
-    fem::io::dsl::Registry& registry,
-    PretensionSectionCountSink sink) {
-    registry.command("PRETENSIONSECTION", [&](fem::io::dsl::Command& command) {
-        command.allow_if(fem::io::dsl::Condition::parent_is("ROOT"));
-
-        command.keyword(
-            fem::io::dsl::KeywordSpec::make()
-                .key("NAME").required()
-                .key("SURFACE_A").required()
-                .key("SURFACE_B").optional(""));
-
-        command.on_exit([sink](const fem::io::dsl::Keys&) {
-            sink();
-        });
-
-        command.variant(fem::io::dsl::Variant::make());
-    });
-}
-
-inline void register_pretension(
+void register_pretension(
     fem::io::dsl::Registry& registry,
     model::Model& model,
     fem::io::reader::Parser& parser) {
@@ -95,17 +76,19 @@ inline void register_pretension(
                     .optional("DISPLACEMENT")
                     .allowed({"FORCE", "DISPLACEMENT"})
                 .key("VALUE")
-                    .optional("0")
+                    .optional("")
                     .doc("Force or relative displacement value"));
 
         command.on_enter([&model, &parser](const fem::io::dsl::Keys& keys) {
             const std::string section = keys.raw("SECTION");
             const std::string action = keys.raw("ACTION");
+            logging::error(action != "LOAD" || !keys.raw("VALUE").empty(),
+                "PRETENSION ACTION=LOAD requires VALUE");
 
             if (parser.active_loadcase()) {
                 parser.queue_pretension_action(
                     section, action, keys.raw("CONTROL"),
-                    keys.get<fem::Precision>("VALUE"));
+                    action == "LOAD" ? keys.get<fem::Precision>("VALUE") : Precision(0));
                 return;
             }
 

@@ -349,8 +349,6 @@ void Parser::process_deck(const io::dsl::Deck&                  deck,
     // ---------------------------------------------------------------------
     // Assembly regions, properties and dense fields
     // ---------------------------------------------------------------------
-
-
     for (const auto* assembly : root.children("ASSEMBLY")) {
         assembly->execute_children("NSET");
         assembly->execute_children("ELSET");
@@ -360,8 +358,6 @@ void Parser::process_deck(const io::dsl::Deck&                  deck,
         assembly->execute_children("MASS");
         assembly->execute_children("ROTARYINERTIA");
         assembly->execute_children("SPRING");
-
-
     }
 
     root.execute_children("PRETENSIONSECTION");
@@ -644,6 +640,9 @@ void Parser::end_loadcase() {
         "Parser: cannot end a load case when none is active");
 
     auto loadcase = std::move(active_loadcase_);
+    logging::error(model_->_data->pretension_sections.empty() ||
+        loadcase->type_name() == "LINEARSTATIC",
+        "PRETENSION currently supports LINEARSTATIC load cases only");
     for (const auto& action : queued_pretension_actions_) {
         if (action.action == "LOCK") {
             model_->lock_pretension_section(action.section);

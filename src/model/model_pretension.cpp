@@ -1,4 +1,5 @@
 #include "model.h"
+#include "element/element_structural.h"
 
 #include <algorithm>
 #include <cmath>
@@ -35,10 +36,10 @@ namespace {
 std::set<ID> surface_nodes(ModelData& data, const std::string& set_name) {
     std::set<ID> nodes;
     for (const ID surface_id : *data.surface_sets.get(set_name)) {
-        if (surface_id < 0 ||
-            surface_id >= static_cast<ID>(data.surfaces.size())) continue;
+        logging::error(surface_id >= 0 && surface_id < static_cast<ID>(data.surfaces.size()),
+            "PRETENSION SECTION: invalid surface in ", set_name);
         const auto& surface = data.surfaces[static_cast<std::size_t>(surface_id)];
-        if (!surface) continue;
+        logging::error(surface != nullptr, "PRETENSION SECTION: null surface in ", set_name);
         for (Index i = 0; i < surface->n_nodes; ++i) {
             nodes.insert(surface->nodes()[i]);
         }
@@ -59,6 +60,18 @@ std::set<ID> surface_owners(ModelData& data, const std::string& set_name) {
 
 void prepare_surface_pair(ModelData& data,
                           pretension::PretensionSection& section) {
+    for (const auto& set_name : {section.interface_surface_set_a, section.interface_surface_set_b}) {
+        for (const ID surface : *data.surface_sets.get(set_name)) {
+            logging::error(surface >= 0 && surface < static_cast<ID>(data.surface_element_ids.size()),
+                "PRETENSION SECTION: surface has no owning solid element");
+            const ID owner = data.surface_element_ids[surface];
+            logging::error(owner >= 0 && owner < static_cast<ID>(data.elements.size()),
+                "PRETENSION SECTION: invalid surface owner");
+            const auto* structural = data.elements[owner]->as<StructuralElement>();
+            logging::error(structural && structural->is_solid(),
+                "PRETENSION SECTION: only solid element faces are supported");
+        }
+    }
     const auto nodes_a = surface_nodes(data, section.interface_surface_set_a);
     const auto nodes_b = surface_nodes(data, section.interface_surface_set_b);
     logging::error(!nodes_a.empty() && !nodes_b.empty(),
@@ -74,16 +87,28 @@ void prepare_surface_pair(ModelData& data,
     for (const ID node : nodes_a) {
         const Vec3 point = data.positions->row_vec3(static_cast<Index>(node));
         center_a += point;
-        scale = std::max(scale, point.norm());
+
     }
     for (const ID node : nodes_b) {
         const Vec3 point = data.positions->row_vec3(static_cast<Index>(node));
         center_b += point;
-        scale = std::max(scale, point.norm());
+
     }
     center_a /= static_cast<Precision>(nodes_a.size());
     center_b /= static_cast<Precision>(nodes_b.size());
+    for (const ID node : nodes_a) {
+        scale = std::max(scale,
+            (data.positions->row_vec3(static_cast<Index>(node)) - center_a).norm());
+    }
     const Precision tolerance = Precision(1e-8) * std::max(scale, Precision(1));
+    for (const auto& existing : data.pretension_sections) {
+        if (!existing || !existing->prepared) continue;
+        for (const auto& pair : existing->interface_pairs) {
+            logging::error(!nodes_a.count(pair.side_a) && !nodes_a.count(pair.side_b) &&
+                          !nodes_b.count(pair.side_a) && !nodes_b.count(pair.side_b),
+                "PRETENSION SECTION '", section.name, "': overlapping sections are unsupported");
+        }
+    }
 
     std::map<ID, ID> pairs;
     std::set<ID> unused_b = nodes_b;
@@ -144,17 +169,34 @@ void prepare_surface_pair(ModelData& data,
             }
         }
         for (const ID node : shared_nodes) {
+            bool retained = false;
+            for (const auto& element : data.elements) {
+                if (!element || side_b_elements.count(element->elem_id)) continue;
+                for (const ID connected : *element) retained |= connected == node;
+            }
+            logging::error(retained, "PRETENSION SECTION '", section.name,
+                "': surface does not separate two element regions");
+        }
+        for (const ID node : shared_nodes) {
             duplicated_b[node] = data.append_node(
                 data.positions->row_vec3(static_cast<Index>(node)));
         }
         for (const ID element_id : side_b_elements) {
             auto& element = data.elements[static_cast<std::size_t>(element_id)];
             for (const auto& [old_node, new_node] : duplicated_b) {
-                element->replace_node(old_node, new_node);
+                bool contains = false;
+                for (const ID node : *element) contains |= node == old_node;
+                if (contains) {
+                    const auto* structural = element->as<StructuralElement>();
+                    logging::error(structural && structural->is_solid() && element->replace_node(old_node, new_node),
+                        "PRETENSION SECTION: splitting requires supported solid elements");
+                }
             }
         }
-        for (const ID surface_id : *data.surface_sets.get(
-                 section.interface_surface_set_b)) {
+        // Every boundary on rewired elements must follow the new connectivity,
+        // including surfaces later used by pressure, tie or contact definitions.
+        for (ID surface_id = 0; surface_id < static_cast<ID>(data.surfaces.size()); ++surface_id) {
+            if (!side_b_elements.count(data.surface_element_ids[surface_id])) continue;
             auto& surface = data.surfaces[static_cast<std::size_t>(surface_id)];
             if (!surface) continue;
             for (Index i = 0; i < surface->n_nodes; ++i) {
@@ -196,6 +238,11 @@ void prepare_surface_pair(ModelData& data,
         "PRETENSION SECTION '", section.name,
         "': cannot determine interface axis");
     section.axis_direction = axis.normalized();
+    for (const ID node : nodes_a) {
+        logging::error(std::abs(section.axis_direction.dot(
+            data.positions->row_vec3(static_cast<Index>(node)) - center_a)) <= tolerance,
+            "PRETENSION SECTION '", section.name, "': interface must be planar");
+    }
     section.axis_origin = (center_a + center_b) * Precision(0.5);
     logging::info(true, "PRETENSIONSECTION '", section.name,
         "': paired ", section.interface_pairs.size(),
@@ -217,6 +264,7 @@ void Model::prepare_pretension_sections() {
 void Model::set_pretension_load(const std::string& name,
                                 pretension::Control control,
                                 Precision value) {
+    logging::error(std::isfinite(value), "PRETENSION: VALUE must be finite");
     for (auto& section : _data->pretension_sections) {
         if (!section || section->name != name) continue;
         section->control = control;

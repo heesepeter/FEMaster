@@ -191,6 +191,9 @@ void LinearStatic::run() {
         [&]() {
             ConstraintTransformer::Options options;
             options.method = constraint_method;
+            if (!model->_data->pretension_sections.empty()) {
+                options.lagrange_regularization = Precision(0);
+            }
             return std::make_unique<ConstraintTransformer>(
                 equations,
                 active_dof_idx_mat,
@@ -294,8 +297,23 @@ void LinearStatic::run() {
         "REACTION_FORCES"
     );
 
-    auto pretension_force = model->build_pretension_force_matrix();
-    auto pretension_gap = model->build_pretension_gap_matrix(global_disp_mat);
+    model::Field pretension_force, pretension_gap;
+    if (!model->_data->pretension_sections.empty()) {
+        pretension_force = model->build_pretension_force_matrix();
+        pretension_gap = model->build_pretension_gap_matrix(global_disp_mat);
+    }
+    // The interface force includes constraint reactions after LOCK. Subtract
+    // other external loads so PTFORC remains the force transmitted by the cut.
+    for (const auto& section : model->_data->pretension_sections) {
+        for (const auto& pair : section->interface_pairs) {
+            for (const ID node : {pair.side_a, pair.side_b}) {
+                for (Dim component = 0; component < 3; ++component) {
+                    pretension_force(node, component) +=
+                        global_internal_mat(node, component) - global_load_mat(node, component);
+                }
+            }
+        }
+    }
 
     Timer::measure(
         [&]() {
@@ -316,11 +334,9 @@ void LinearStatic::run() {
                 output.provide(OutputField::TEMPERATURE, *model->_data->temperature);
             }
 
+            output.provide(OutputField::PTFORC, pretension_force);
+            output.provide(OutputField::PTGAP, pretension_gap);
             output.write_frame(*writer, model->_data.get());
-            if (!model->_data->pretension_sections.empty()) {
-                writer->write_field(pretension_force, "PTFORC", model->_data.get());
-                writer->write_field(pretension_gap, "PTGAP", model->_data.get());
-            }
         },
         "resolving and writing requested result fields");
 

@@ -20,10 +20,6 @@ Equations get_pretension_equations(
     (void) model_data;
 
     Equations equations;
-    if (section.state == pretension::State::Open) {
-        return equations;
-    }
-
     logging::error(!section.interface_pairs.empty(),
                    "Pretension section '", section.name,
                    "' has no interface node pairs");
@@ -41,9 +37,11 @@ Equations get_pretension_equations(
     Vec3 tangent_1 = axis.cross(reference).normalized();
     Vec3 tangent_2 = axis.cross(tangent_1).normalized();
     const std::array<Vec3, 2> tangents = {tangent_1, tangent_2};
-    const Precision normal_gap = section.state == pretension::State::Loading
-        ? section.prescribed_value
-        : section.locked_gap;
+    const bool force_control = section.state == pretension::State::Loading
+        && section.control == pretension::Control::Force;
+    const Precision normal_gap = section.state == pretension::State::Open ? Precision(0)
+        : section.state == pretension::State::Locked ? section.locked_gap
+        : section.prescribed_value;
 
     const auto append_projection = [&](std::vector<EquationEntry>& entries,
                                        const pretension::InterfacePair& pair,
@@ -81,7 +79,7 @@ Equations get_pretension_equations(
         }
     }
 
-    if (section.control == pretension::Control::Force) {
+    if (force_control) {
         // Leave one collective axial gap free and constrain all remaining
         // pair gaps to it. The distributed nodal forces then act on exactly
         // this single generalized pretension displacement.
