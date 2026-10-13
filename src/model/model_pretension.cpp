@@ -87,12 +87,10 @@ void prepare_surface_pair(ModelData& data,
     for (const ID node : nodes_a) {
         const Vec3 point = data.positions->row_vec3(static_cast<Index>(node));
         center_a += point;
-
     }
     for (const ID node : nodes_b) {
         const Vec3 point = data.positions->row_vec3(static_cast<Index>(node));
         center_b += point;
-
     }
     center_a /= static_cast<Precision>(nodes_a.size());
     center_b /= static_cast<Precision>(nodes_b.size());
@@ -207,15 +205,11 @@ void prepare_surface_pair(ModelData& data,
     }
 
     section.interface_pairs.clear();
-    section.side_a_nodes.clear();
-    section.side_b_nodes.clear();
     for (const auto& [node_a, original_b] : pairs) {
         const auto duplicated = duplicated_b.find(original_b);
         const ID node_b = duplicated == duplicated_b.end()
             ? original_b : duplicated->second;
         section.interface_pairs.push_back({node_a, node_b});
-        section.side_a_nodes.push_back(node_a);
-        section.side_b_nodes.push_back(node_b);
     }
 
     Vec3 axis = center_b - center_a;
@@ -243,7 +237,6 @@ void prepare_surface_pair(ModelData& data,
             data.positions->row_vec3(static_cast<Index>(node)) - center_a)) <= tolerance,
             "PRETENSION SECTION '", section.name, "': interface must be planar");
     }
-    section.axis_origin = (center_a + center_b) * Precision(0.5);
     logging::info(true, "PRETENSIONSECTION '", section.name,
         "': paired ", section.interface_pairs.size(),
         " interface node(s), split ", shared_nodes.size(), " shared node(s)");

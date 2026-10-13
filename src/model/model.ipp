@@ -150,7 +150,6 @@ inline void Model::set_surface(ID id, ID element_id, ID surface_id) {
 
         active->surfaces.emplace(local_id, std::move(surface));
         active->surface_element_ids[local_id] = element_id;
-        active->surface_local_ids[local_id] = surface_id;
         active->surface_sets.add(local_id);
     }
 

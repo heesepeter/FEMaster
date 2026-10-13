@@ -114,7 +114,6 @@ struct ModelData {
     std::vector<SurfacePtr> surfaces;
     std::vector<LinePtr>    lines;
     std::vector<ID>         surface_element_ids;
-    std::vector<ID>         surface_local_ids;
 
     // Post-compile node duplication used to separate a merged face pair.
     ID append_node(const Vec3& position);

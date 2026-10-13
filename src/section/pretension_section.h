@@ -33,10 +33,7 @@ struct PretensionSection {
     std::string interface_surface_set_a;
     std::string interface_surface_set_b;
 
-    Vec3 axis_origin = Vec3::Zero();
     Vec3 axis_direction = Vec3::UnitX();
-    std::vector<ID> side_a_nodes;
-    std::vector<ID> side_b_nodes;
     std::vector<InterfacePair> interface_pairs;
     Control control = Control::Displacement;
     State state = State::Open;
@@ -47,7 +44,6 @@ struct PretensionSection {
     bool has_solved_gap = false;
 
     bool prepared = false;
-
 };
 
 }
