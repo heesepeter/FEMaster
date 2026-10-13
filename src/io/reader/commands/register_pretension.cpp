@@ -63,6 +63,47 @@ void register_pretension_section(
 
         command.variant(fem::io::dsl::Variant::make());
     });
+    registry.command("PRE-TENSIONSECTION", [&](fem::io::dsl::Command& command) {
+        namespace dsl = fem::io::dsl;
+        command.allow_if(dsl::Condition::parent_is({"ROOT", "ASSEMBLY"}));
+        command.keyword(dsl::KeywordSpec::make()
+            .key("SURFACE").optional()
+            .key("ELEMENT").optional()
+            .key("NODE").required()
+            .key("FOLLOWER").optional("NO"));
+        auto surface = std::make_shared<std::string>();
+        auto node = std::make_shared<std::string>();
+        auto normal = std::make_shared<Vec3>(Vec3::Zero());
+        command.on_enter([surface, node, normal](const dsl::Keys& keys) {
+            logging::error(!keys.has("ELEMENT"),
+                "PRE-TENSION SECTION: ELEMENT-based pretension is unsupported; use SURFACE");
+            logging::error(keys.has("SURFACE"), "PRE-TENSION SECTION: SURFACE is required");
+            logging::error(keys.raw("FOLLOWER") == "NO",
+                "PRE-TENSION SECTION: only FOLLOWER=NO is supported");
+            *surface = keys.raw("SURFACE");
+            *node = keys.raw("NODE");
+            normal->setZero();
+        });
+        command.variant(dsl::Variant::make().segment(dsl::Segment::make()
+            .range(dsl::LineRange{}.min(0).max(1))
+            .pattern(dsl::Pattern::make().one<Precision>().one<Precision>().one<Precision>())
+            .bind([normal](Precision x, Precision y, Precision z) {
+                *normal = Vec3{x,y,z};
+                logging::error(normal->allFinite() && normal->norm() > Precision(0),
+                    "PRE-TENSION SECTION: normal must be finite and nonzero");
+            })));
+        command.on_exit([&model, surface, node, normal](const dsl::Keys&) {
+            // Require an explicitly defined node: avoids modifying frozen instance maps.
+            auto region = model.resolve_node_region(*node);
+            logging::error(region->size() == 1,
+                "PRE-TENSION SECTION: NODE must resolve to exactly one existing node");
+            model.add_pretension_interface_section("__ABAQUS_PT_" + *node, *surface, *surface);
+            auto& section = *model._data->pretension_sections.back();
+            section.control_node = *region->begin();
+            section.nodal_control = true;
+            section.normal_override = *normal;
+        });
+    });
 }
 
 void register_pretension(

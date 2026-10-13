@@ -329,6 +329,7 @@ const FRDField& frd_field(const std::string& field_name) {
     }
 
     static const std::vector<FRDField> definitions{
+        {{"TF"}, "TF", {FRDComponent::scalar("FORCE", 1)}},
         {
             {"PRETENSION_GAP", "PTGAP"}, "PTGAP",
             {

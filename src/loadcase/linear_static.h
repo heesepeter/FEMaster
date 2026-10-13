@@ -59,6 +59,7 @@ struct LinearStatic : public LoadCase {
             OutputField::LOCAL_SECTION_FORCES,
             OutputField::PTFORC,
             OutputField::PTGAP,
+            OutputField::TF,
             OutputField::SHEAR_FLOW
         });
     }

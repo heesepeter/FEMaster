@@ -237,6 +237,23 @@ void prepare_surface_pair(ModelData& data,
             data.positions->row_vec3(static_cast<Index>(node)) - center_a)) <= tolerance,
             "PRETENSION SECTION '", section.name, "': interface must be planar");
     }
+    if (section.nodal_control) {
+        // Abaqus positive load acts on the underlying (rewired B) side along
+        // the outward average surface normal. Native q uses the same B-A sign.
+        Vec3 normal = Vec3::Zero();
+        for (const ID id : *data.surface_sets.get(section.interface_surface_set_a)) {
+            const auto& surface = data.surfaces[id];
+            normal += surface->area(*data.positions) * surface->normal(*data.positions, Vec2::Zero());
+        }
+        logging::error(normal.allFinite() && normal.norm() > Precision(0),
+            "PRE-TENSION SECTION: cannot determine average normal");
+        normal.normalize();
+        for (const ID id : *data.surface_sets.get(section.interface_surface_set_a))
+            logging::error(normal.dot(data.surfaces[id]->normal(*data.positions, Vec2::Zero())) > Precision(0.999999),
+                "PRE-TENSION SECTION: inconsistent surface orientation");
+        section.axis_direction = section.normal_override.isZero()
+            ? normal : section.normal_override.normalized();
+    }
     logging::info(true, "PRETENSIONSECTION '", section.name,
         "': paired ", section.interface_pairs.size(),
         " interface node(s), split ", shared_nodes.size(), " shared node(s)");
@@ -275,6 +292,8 @@ void Model::set_pretension_load(const std::string& name,
     logging::error(std::isfinite(value), "PRETENSION: VALUE must be finite");
     for (auto& section : _data->pretension_sections) {
         if (!section || section->name != name) continue;
+        logging::error(!section->nodal_control,
+            "PRETENSION: native actions cannot be mixed with Abaqus control-node conditions");
         section->control = control;
         section->prescribed_value = value;
         section->state = pretension::State::Loading;
@@ -287,6 +306,8 @@ void Model::set_pretension_load(const std::string& name,
 void Model::lock_pretension_section(const std::string& name) {
     for (auto& section : _data->pretension_sections) {
         if (!section || section->name != name) continue;
+        logging::error(!section->nodal_control,
+            "PRETENSION: use BOUNDARY,FIXED for an Abaqus section");
         logging::error(section->state != pretension::State::Open,
             "PRETENSION LOCK: section ", name, " has not been loaded yet");
         if (section->state != pretension::State::Locked) {

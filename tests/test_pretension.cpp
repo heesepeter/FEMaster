@@ -93,7 +93,7 @@ void check_binary(const std::string& binary, const std::vector<Frame>& frames) {
                 static_cast<unsigned char>(payload[19 + length])};
         } else if (type == "FDAT") {
             const auto& meta = metadata.at(binary_value<std::uint64_t>(payload, 0));
-            if (meta.name != "PTGAP" && meta.name != "PTFORC") continue;
+            if (meta.name != "PTGAP" && meta.name != "PTFORC" && meta.name != "TF") continue;
             const auto& expected = frames.at(meta.step - 1).at(meta.name);
             ASSERT_EQ(meta.rows, expected.size());
             for (std::size_t row = 0; row < meta.rows; ++row) {
@@ -108,7 +108,7 @@ void check_binary(const std::string& binary, const std::vector<Frame>& frames) {
             ++checked;
         }
     }
-    EXPECT_EQ(checked, 6);
+    EXPECT_EQ(checked, 9);
 }
 
 class Pretension : public testing::Test {
@@ -131,6 +131,25 @@ protected:
         replace(deck, "2, 5, 6, 7, 8, 9, 10, 11, 12", "2, 17, 18, 19, 20, 9, 10, 11, 12");
         replace(deck, "*SURFACE, SFSET=CUT_FACE\n2, 2, 1\n*PRETENSIONSECTION, NAME=PT1, SURFACE_A=CUT_FACE",
             "*SURFACE, SFSET=CUT_A\n1, 1, 2\n*SURFACE, SFSET=CUT_B\n2, 2, 1\n*PRETENSIONSECTION, NAME=PT1, SURFACE_A=CUT_A, SURFACE_B=CUT_B");
+    }
+    void abaqus(bool fixed = true, bool displacement = false) {
+        replace(deck, "*ELEMENT, TYPE=C3D8", "900001, 99, 88, 77\n*ELEMENT, TYPE=C3D8");
+        replace(deck, "*SURFACE, SFSET=CUT_FACE\n2, 2, 1", "*SURFACE, TYPE=ELEMENT, NAME=CUT_FACE\n2, S1");
+        replace(deck, "*PRETENSIONSECTION, NAME=PT1, SURFACE_A=CUT_FACE",
+            "*PRE-TENSION SECTION, SURFACE=CUT_FACE, NODE=900001");
+        replace(deck, "*SUPPORT, SUPPORT_COLLECTOR=BC\nENDS, 0.0, 0.0, 0.0, NAN, NAN, NAN",
+            "*BOUNDARY\nENDS, 1, 3, 0");
+        for (const auto* name : {"FORCE_PRETENSION", "LOCK_SOLVED_GAP", "LOCK_WITH_EXTERNAL_LOAD"}) {
+            replace(deck, std::string("*LOADCASE, TYPE=LINEARSTATIC, NAME=") + name,
+                std::string("*STEP, NAME=") + name + "\n*STATIC\n1, 1");
+            replace(deck, "*SUPPORTS\nBC\n", "");
+            replace(deck, "*END\n", "*END STEP\n");
+        }
+        replace(deck, "*PRETENSION, SECTION=PT1, ACTION=LOAD, CONTROL=FORCE, VALUE=1000.0",
+            displacement ? "*BOUNDARY\n900001, 1, 1, 0.0035714285714285714" : "*CLOAD\n900001, 1, 1000");
+        for (int i=0; i<2; ++i)
+            replace(deck, "*PRETENSION, SECTION=PT1, ACTION=LOCK",
+                fixed ? "*BOUNDARY, FIXED\n900001, 1, 1" : "");
     }
     void TearDown() override { std::filesystem::remove_all(directory); }
     void run(bool femr = false) {
@@ -170,7 +189,7 @@ protected:
             EXPECT_NEAR(frame.at("PTGAP").at(section.control_node).at(0), expected_gap, 1e-8);
         }
         EXPECT_NEAR(section.total_force, frames.back().at("PTFORC").at(section.control_node).at(0), 1e-3);
-        EXPECT_NEAR(section.locked_gap, expected_gap, 1e-10);
+        if (!section.nodal_control) EXPECT_NEAR(section.locked_gap, expected_gap, 1e-10);
         EXPECT_NE(read_file(directory / "model.frd").find("PTGAP"), std::string::npos);
     }
 };
@@ -360,11 +379,235 @@ TEST_F(Pretension, ExplicitNativeControlNode) {
     check(1000.0 * 3.0 / (210000.0 * 4.0));
     EXPECT_EQ(parser.model()._data->pretension_sections[0]->control_node,
         parser.model().compiled_node_id("900001"));
+    EXPECT_NE(read_file(directory / "model.res").find("control   : 900001 (DOF 1)"), std::string::npos);
 }
 
 TEST_F(Pretension, RejectsStructuralControlNode) {
     replace(deck, "NAME=PT1, SURFACE_A=CUT_FACE", "NAME=PT1, SURFACE_A=CUT_FACE, NODE=5");
     EXPECT_THROW(run(), std::exception);
+}
+
+
+TEST_P(PretensionExact, AbaqusNativeEquivalenceAndFixed) {
+    const auto original = deck;
+    for (const bool displacement : {false, true}) {
+        deck = original;
+        select_method();
+        if (displacement) replace(deck, "CONTROL=FORCE, VALUE=1000.0",
+            "CONTROL=DISPLACEMENT, VALUE=0.0035714285714285714");
+        run();
+        const auto native = read_frames(read_file(directory / "model.res"));
+        deck = original;
+        select_method();
+        abaqus(true, displacement);
+        run(true);
+        check(1000.0 * 3.0 / (210000.0 * 4.0));
+        const auto result = read_frames(read_file(directory / "model.res"));
+        const auto& section = *parser.model()._data->pretension_sections[0];
+        // Map all physical nodes; generated cut nodes shift by one because
+        // the explicit Abaqus control node precedes mesh preparation.
+        for (std::size_t step = 0; step < native.size(); ++step) {
+            for (const auto* field : {"DISPLACEMENT", "PTFORC", "PTGAP"})
+                for (std::size_t node=0; node<20; ++node)
+                    for (std::size_t c=0; c<native[step].at(field)[node].size(); ++c)
+                        EXPECT_NEAR(result[step].at(field)[node < 16 ? node : node+1][c],
+                            native[step].at(field)[node][c], 1e-5);
+            const double total = result[step].at("TF")[section.control_node][0];
+            const double reaction = result[step].at("REACTION_FORCES")[section.control_node][0];
+            EXPECT_NEAR(total, reaction + (displacement ? 0 : 1000), 1e-4);
+            EXPECT_NEAR(total, result[step].at("PTFORC")[section.control_node][0], 1e-4);
+        }
+        EXPECT_NE(read_file(directory / "model.frd").find("TF"), std::string::npos);
+        check_binary(read_file(directory / "model.femr"), result);
+    }
+}
+
+TEST_F(Pretension, AbaqusForceCarriesWithoutFixed) {
+    abaqus(false);
+    run();
+    const auto frames = read_frames(read_file(directory / "model.res"));
+    const ID q = parser.model()._data->pretension_sections[0]->control_node;
+    for (const auto& frame : frames) EXPECT_NEAR(frame.at("TF")[q][0], 1000, 1e-4);
+    EXPECT_GT(std::abs(frames[2].at("PTGAP")[q][0] - frames[0].at("PTGAP")[q][0]), 1e-7);
+}
+
+TEST_F(Pretension, AbaqusModNewAndAmplitude) {
+    abaqus(false);
+    replace(deck, "*PRE-TENSION SECTION", "*NSET, NSET=QALIAS\n900001\n*PRE-TENSION SECTION");
+    replace(deck, "*STEP, NAME=FORCE_PRETENSION",
+        "*AMPLITUDE, NAME=RAMP\n0, 0, 1, 0.5\n*STEP, NAME=FORCE_PRETENSION");
+    replace(deck, "*CLOAD\n900001, 1, 1000", "*CLOAD, AMPLITUDE=RAMP\n900001, 1, 1000");
+    replace(deck, "*STEP, NAME=LOCK_SOLVED_GAP\n*STATIC\n1, 1",
+        "*STEP, NAME=LOCK_SOLVED_GAP\n*STATIC\n1, 1\n*CLOAD, OP=MOD\nQALIAS, 1, 2000");
+    replace(deck, "*LOADS\nEXTERNAL", "*CLOAD, OP=NEW\nMIDDLE, 3, -1");
+    run();
+    const auto frames = read_frames(read_file(directory / "model.res"));
+    const ID q = parser.model()._data->pretension_sections[0]->control_node;
+    EXPECT_NEAR(frames[0].at("TF")[q][0], 500, 1e-4);
+    EXPECT_NEAR(frames[1].at("TF")[q][0], 2000, 1e-4);
+    EXPECT_NEAR(frames[2].at("TF")[q][0], 0, 1e-4);
+}
+
+TEST_F(Pretension, AbaqusBoundaryNewReleasesFixed) {
+    abaqus();
+    replace(deck, "*LOADS\nEXTERNAL", "");
+    // Only the second FIXED occurrence (in step 3) is replaced.
+    auto pos = deck.rfind("*BOUNDARY, FIXED\n900001, 1, 1");
+    ASSERT_NE(pos, std::string::npos);
+    deck.replace(pos, std::string("*BOUNDARY, FIXED\n900001, 1, 1").size(),
+        "*BOUNDARY, OP=NEW\nENDS, 1, 3, 0\n*CLOAD, OP=MOD\n900001, 1, 2000");
+    run();
+    const auto frames = read_frames(read_file(directory / "model.res"));
+    const ID q = parser.model()._data->pretension_sections[0]->control_node;
+    EXPECT_NEAR(frames[2].at("TF")[q][0], 2000, 1e-4);
+    EXPECT_NEAR(frames[2].at("PTGAP")[q][0], 2000.0*3/(210000*4), 1e-8);
+}
+
+TEST_F(Pretension, AbaqusSingletonAndNormal) {
+    abaqus();
+    replace(deck, "*PRE-TENSION SECTION, SURFACE=CUT_FACE, NODE=900001",
+        "*NSET, NSET=CONTROL\n900001\n*PRE-TENSION SECTION, SURFACE=CUT_FACE, NODE=CONTROL, FOLLOWER=NO\n0, 0, -2");
+    run();
+    check(1000.0*3/(210000*4));
+}
+
+TEST_F(Pretension, AbaqusUnloadedSectionKeepsNativeZeroGap) {
+    abaqus(false);
+    replace(deck, "*CLOAD\n900001, 1, 1000", "");
+    run();
+    const auto frames = read_frames(read_file(directory / "model.res"));
+    const ID q = parser.model()._data->pretension_sections[0]->control_node;
+    for (const auto& frame : frames) EXPECT_NEAR(frame.at("PTGAP")[q][0], 0, 1e-10);
+}
+
+TEST_F(Pretension, AbaqusRejectsUnsupportedAndInvalidControls) {
+    abaqus();
+    const auto original = deck;
+    const std::vector<std::pair<std::string,std::string>> cases = {
+        {"NODE=900001", "NODE=999999"},
+        {"NODE=900001", "NODE=5"},
+        {"NODE=900001", "NODE=ENDS"},
+        {"NODE=900001", "NODE=900001, FOLLOWER=YES"},
+        {"SURFACE=CUT_FACE", "ELEMENT=2"},
+        {"NODE=900001", "NODE=900001\n0, 0, 0"},
+        {"900001, 1, 1000", "900001, 2, 1000"},
+        {"900001, 1, 1000", "900001, 2, 0"},
+        {"900001, 1, 1000", "900001, 1, NAN"},
+        {"900001, 1, 1000", "900001, 1, 1000\n*BOUNDARY\n900001, 2, 2, 0"},
+        {"900001, 1, 1000", "900001, 1, 1000\n*BOUNDARY\n900001, 1, 1, NAN"},
+        {"*PRE-TENSION SECTION, SURFACE=CUT_FACE, NODE=900001",
+         "*NSET, NSET=QALIAS\n900001\n*PRE-TENSION SECTION, SURFACE=CUT_FACE, NODE=900001\n*PRE-TENSION SECTION, SURFACE=CUT_FACE, NODE=QALIAS"},
+        {"*PRE-TENSION SECTION, SURFACE=CUT_FACE, NODE=900001",
+         "*PART, NAME=UNSUPPORTED\n*PRE-TENSION SECTION, SURFACE=CUT_FACE, NODE=900001\n*END PART"},
+        {"*CLOAD\n900001, 1, 1000", "*BOUNDARY, FIXED\n900001, 1, 1"},
+        {"*PRE-TENSION SECTION, SURFACE=CUT_FACE, NODE=900001",
+         "*PRE-TENSION SECTION, SURFACE=CUT_FACE, NODE=900001\n*PRE-TENSION SECTION, SURFACE=CUT_FACE, NODE=900001"},
+        {"*STEP, NAME=FORCE_PRETENSION",
+         "*NSET, NSET=QNODE\n900001\n*TRANSFORM, NSET=QNODE, TYPE=R\n1,0,0,0,1,0\n*STEP, NAME=FORCE_PRETENSION"}
+    };
+    for (const auto& [from,to] : cases) {
+        SCOPED_TRACE(to);
+        deck = original;
+        replace(deck, from, to);
+        EXPECT_THROW(run(), std::exception);
+    }
+}
+
+TEST_F(Pretension, AbaqusRejectsConflictingAdjustment) {
+    abaqus();
+    replace(deck, "*CLOAD\n900001, 1, 1000",
+        "*BOUNDARY\n900001, 1, 1, 0.001\n*BOUNDARY\nNALL, 1, 1, 0");
+    EXPECT_THROW(run(), std::exception);
+}
+
+
+TEST_P(PretensionExact, TwoIndependentRotatedSections) {
+    const auto original = read_file(std::filesystem::path(__FILE__).parent_path() / "data/pretension_two_sections.inp");
+    std::vector<Frame> native;
+    for (const bool nodal : {false, true}) {
+        deck = original;
+        select_method();
+        if (nodal) {
+            abaqus();
+            replace(deck, "*ELEMENT, TYPE=C3D8", "900002, 0, 0, 0\n*ELEMENT, TYPE=C3D8");
+            replace(deck, "*PRETENSIONSECTION, NAME=PT2, SURFACE_A=CUT_SECOND",
+                "*PRE-TENSION SECTION, SURFACE=CUT_SECOND, NODE=900002");
+            replace(deck, "*PRETENSION, SECTION=PT2, ACTION=LOAD, CONTROL=DISPLACEMENT, VALUE=0.007142857142857143",
+                "*BOUNDARY\n900002, 1, 1, 0.007142857142857143");
+            for (int i=0; i<2; ++i) replace(deck, "*PRETENSION, SECTION=PT2, ACTION=LOCK",
+                "*BOUNDARY, FIXED\n900002, 1, 1");
+        }
+        run();
+        const auto frames = read_frames(read_file(directory / "model.res"));
+        const auto& sections = parser.model()._data->pretension_sections;
+        ASSERT_EQ(sections.size(), 2u);
+        EXPECT_NE(sections[0]->control_node, sections[1]->control_node);
+        EXPECT_NEAR(sections[1]->axis_direction(0), -1, 1e-12);
+        for (const auto& frame : frames) {
+            EXPECT_NEAR(frame.at("PTGAP")[sections[0]->control_node][0], 1000.0*3/(210000*4), 1e-8);
+            EXPECT_NEAR(frame.at("PTGAP")[sections[1]->control_node][0], 2000.0*3/(210000*4), 1e-8);
+            EXPECT_NEAR(frame.at("TF")[sections[1]->control_node][0], 2000, 1e-4);
+        }
+        if (!nodal) native = frames;
+        else for (std::size_t step=0; step<3; ++step)
+            for (std::size_t node=0; node<32; ++node)
+                for (std::size_t c=0; c<3; ++c)
+                    EXPECT_NEAR(frames[step].at("DISPLACEMENT")[node][c],
+                        native[step].at("DISPLACEMENT")[node][c], 1e-8);
+    }
+}
+
+TEST_F(Pretension, AbaqusAssemblyWithInstanceQualifiedReferences) {
+    abaqus();
+    // Move the topology and regions to a reusable Part; declare the section in
+    // Assembly using compiled instance-qualified node and surface references.
+    const std::string material = "*MATERIAL, NAME=STEEL\n*ELASTIC, TYPE=ISOTROPIC\n210000.0, 0.0\n";
+    replace(deck, material, "");
+    replace(deck, "*NODE, NSET=NALL", material + "*PART, NAME=BOLT\n*NODE, NSET=NALL");
+    replace(deck, "*PRE-TENSION SECTION, SURFACE=CUT_FACE, NODE=900001\n", "");
+    replace(deck, "*BOUNDARY\nENDS, 1, 3, 0",
+        "*END PART\n*ASSEMBLY, NAME=A\n*INSTANCE, NAME=B1, PART=BOLT\n*END INSTANCE\n"
+        "*PRE-TENSION SECTION, SURFACE=B1.CUT_FACE, NODE=B1.900001\n*END ASSEMBLY\n"
+        "*BOUNDARY\nB1.ENDS, 1, 3, 0");
+    replace(deck, "MIDDLE, 0.0", "B1.MIDDLE, 0.0");
+    replace(deck, "900001, 1, 1000", "B1.900001, 1, 1000");
+    for (int i=0; i<2; ++i) replace(deck, "\n900001, 1, 1\n", "\nB1.900001, 1, 1\n");
+    run();
+    check(1000.0*3/(210000*4));
+}
+
+TEST_F(Pretension, AbaqusReversedNormalAndBoundaryAmplitude) {
+    abaqus(true, true);
+    replace(deck, "NODE=900001\n", "NODE=900001\n0, 0, 1\n");
+    replace(deck, "*STEP, NAME=FORCE_PRETENSION",
+        "*AMPLITUDE, NAME=HALF\n0, 0, 1, 0.5\n*STEP, NAME=FORCE_PRETENSION");
+    replace(deck, "*BOUNDARY\n900001, 1, 1, 0.0035714285714285714",
+        "*BOUNDARY, AMPLITUDE=HALF\n900001, 1, 1, 0.007142857142857143");
+    run();
+    check(1000.0*3/(210000*4));
+    EXPECT_NEAR(parser.model()._data->pretension_sections[0]->axis_direction(2), 1, 1e-12);
+}
+
+TEST_F(Pretension, RejectsBalancingOfScalarControlLoads) {
+    const auto original = deck;
+    for (const auto* command : {"INERTIARELIEF", "REBALANCELOADS"}) {
+        deck = original;
+        replace(deck, "*PRETENSION, SECTION=PT1, ACTION=LOAD", std::string("*") + command + "\n*PRETENSION, SECTION=PT1, ACTION=LOAD");
+        EXPECT_THROW(run(), std::exception);
+    }
+}
+
+TEST_F(Pretension, AbaqusBoundaryAliasReplacesScalarPrescription) {
+    abaqus(true, true);
+    replace(deck, "*PRE-TENSION SECTION", "*NSET, NSET=QALIAS\n900001\n*PRE-TENSION SECTION");
+    replace(deck, "*BOUNDARY, FIXED\n900001, 1, 1",
+        "*BOUNDARY, OP=MOD\nQALIAS, 1, 1, 0.007142857142857143");
+    run();
+    const auto frames = read_frames(read_file(directory / "model.res"));
+    const ID q = parser.model()._data->pretension_sections[0]->control_node;
+    EXPECT_NEAR(frames[0].at("TF")[q][0], 1000, 1e-4);
+    EXPECT_NEAR(frames[1].at("TF")[q][0], 2000, 1e-4);
+    EXPECT_NEAR(frames[2].at("PTGAP")[q][0], 2000.0*3/(210000*4), 1e-8);
 }
 
 TEST_F(Pretension, RejectsLockBeforeLoad) {

@@ -77,6 +77,7 @@ enum class OutputField : std::uint8_t {
 
     PTFORC,
     PTGAP,
+    TF,
 
     COUNT
 };

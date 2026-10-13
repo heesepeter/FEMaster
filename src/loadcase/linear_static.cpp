@@ -68,6 +68,9 @@ void LinearStatic::run() {
         "PRETENSION: LAGRANGE is unsupported because its multiplier path does not "
         "check constraint rank or consistency. Use NULLSPACE or ELIMINATION.");
 
+    logging::error(!has_pretension || (!inertia_relief && !rebalance_loads),
+        "PRETENSION: inertia relief and load rebalancing do not support scalar control-node loads");
+
     // Prepare section assignments and analysis-local element state
     model->assign_sections();
     model->step_begin();
@@ -303,11 +306,14 @@ void LinearStatic::run() {
         "REACTION_FORCES"
     );
 
-    model::Field pretension_force, pretension_gap;
+    model::Field pretension_force, pretension_gap, pretension_total;
     if (!model->_data->pretension_sections.empty()) {
         pretension_force = model::Field{"PRETENSION_FORCE", model::FieldDomain::NODE,
             model->_data->field_rows(model::FieldDomain::NODE), 3};
         pretension_force.set_zero();
+        pretension_total = model::Field{"TF", model::FieldDomain::NODE,
+            model->_data->field_rows(model::FieldDomain::NODE), 1};
+        pretension_total.set_zero();
         pretension_gap = model->build_pretension_gap_matrix(global_disp_mat);
     }
     // The interface force includes constraint reactions after LOCK. Subtract
@@ -326,6 +332,8 @@ void LinearStatic::run() {
             for (Dim component = 0; component < 3; ++component)
                 section->total_force += pretension_force(pair.side_b, component) * section->axis_direction(component);
         pretension_force(section->control_node, 0) = section->total_force;
+        pretension_total(section->control_node, 0) = section->total_force;
+        reaction_masked(section->control_node, 0) = section->total_force - global_load_mat(section->control_node, 0);
         pretension_gap(section->control_node, 0) = global_disp_mat(section->control_node, 0);
     }
 
@@ -350,6 +358,7 @@ void LinearStatic::run() {
 
             output.provide(OutputField::PTFORC, pretension_force);
             output.provide(OutputField::PTGAP, pretension_gap);
+            output.provide(OutputField::TF, pretension_total);
             output.write_frame(*writer, model->_data.get());
         },
         "resolving and writing requested result fields");

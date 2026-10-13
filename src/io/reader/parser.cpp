@@ -361,6 +361,9 @@ void Parser::process_deck(const io::dsl::Deck&                  deck,
     }
 
     root.execute_children("PRETENSIONSECTION");
+    root.execute_children("PRE-TENSIONSECTION");
+    for (const auto* assembly : root.children("ASSEMBLY"))
+        assembly->execute_children("PRE-TENSIONSECTION");
     model_->prepare_pretension_sections();
 
     root.execute_children("FIELD");

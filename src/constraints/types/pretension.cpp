@@ -86,7 +86,7 @@ Equations get_pretension_equations(
         entries.push_back({section.control_node, 0, Precision(-1)});
         add_equation(std::move(entries), Precision(0));
     }
-    if (!force_control)
+    if (!force_control && (!section.nodal_control || section.state == pretension::State::Open))
         add_equation({{section.control_node, 0, Precision(1)}}, normal_gap);
 
     return equations;

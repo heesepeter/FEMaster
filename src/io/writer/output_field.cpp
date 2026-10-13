@@ -62,6 +62,7 @@ std::string_view output_field_name(OutputField field) {
         case OutputField::ORIENTATION:          return "ORIENTATION";
         case OutputField::PTFORC: return "PTFORC";
         case OutputField::PTGAP: return "PTGAP";
+        case OutputField::TF: return "TF";
         case OutputField::COUNT:                break;
     }
     return "UNKNOWN";
@@ -81,6 +82,7 @@ std::optional<OutputField> output_field_from_request(std::string token) {
     static const std::unordered_map<std::string, OutputField> fields = {
         {"PTFORC", OutputField::PTFORC},
         {"PTGAP", OutputField::PTGAP},
+        {"TF", OutputField::TF},
         {"U",                    OutputField::DISPLACEMENT},
         {"V",                    OutputField::VELOCITY},
         {"A",                    OutputField::ACCELERATION},

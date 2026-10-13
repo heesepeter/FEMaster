@@ -26,7 +26,19 @@ Build: Darwin 25.6.0 arm64, Apple clang 21.0.0 (clang-2100.1.1.101),
 C++17, CMake Release (`-O3 -DNDEBUG`), double precision ON, fast Eigen compile
 ON (`EIGEN_UNROLLING_LIMIT=50`), Eigen no-debug ON, OpenMP ON, Accelerate ON,
 MKL/CUDA/cuDSS OFF, static runtime OFF, tests ON. `OMP_NUM_THREADS=1`.
-Dependencies and toolchain are those of `build/upstream-master-openmp`.
+Dependency revisions in `build/upstream-master-openmp`:
+
+| Dependency | Revision |
+|---|---|
+|Eigen|`bc3b39870ecb690a623a3f49149a358b95c5781d`|
+|Spectra|`6841bcbacaa0f0a8446210314e682057a084be4e`|
+|argparse|`3eda91b2e1ce7d569f84ba295507c4cd8fd96910`|
+|LZ4|`ebb370ca83af193212df4dcbadcc5d87bc0de2f0`|
+|GoogleTest|`063de7e9578f82b369302001269680b4b1553359`|
+
+The Eigen headers report 3.5.0; the configured dependency tag is 5.0.1.
+Use the recorded revision, rather than the displayed version alone, for exact
+reproduction with cached dependency checkouts.
 
 Reproduce on the baseline revision with the benchmark source/CMake target from
 step 1 of issue #4 (the target itself does not change preparation):

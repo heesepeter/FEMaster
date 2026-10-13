@@ -7,7 +7,7 @@ Field Model::build_pretension_force_matrix() {
                 _data->field_rows(FieldDomain::NODE), 3};
     force.set_zero();
     for (const auto& section : _data->pretension_sections) {
-        if (!section || section->state != pretension::State::Loading ||
+        if (!section || section->nodal_control || section->state != pretension::State::Loading ||
             section->control != pretension::Control::Force ||
             section->interface_pairs.empty()) continue;
         force(section->control_node, 0) = section->prescribed_value;

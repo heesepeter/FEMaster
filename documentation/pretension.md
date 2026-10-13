@@ -70,6 +70,103 @@ then change the transmitted section force while preserving the gap. This is a
 sequence of linear equilibrium solves; nonlinear bolt/contact behavior is not
 included in this version.
 
+## Abaqus-compatible input
+
+A complete companion deck is
+[`096_bolt_pretension_abaqus.inp`](../examples/09_constraints/096_bolt_pretension_abaqus.inp).
+Define an isolated node explicitly, then associate it with a merged cut surface:
+
+```text
+*NODE
+900001, 0, 0, 0
+*SURFACE, TYPE=ELEMENT, NAME=CUT
+2, S1
+*PRE-TENSION SECTION, SURFACE=CUT, NODE=900001, FOLLOWER=NO
+```
+
+`NODE` accepts a scalar compiled reference or an NSET with exactly one node.
+Unlike Abaqus's optional node declaration, FEMaster currently requires the node
+to exist. Undefined references are rejected, rather than creating a node in an
+already compiled Part/Instance map. Native input may still generate its own
+internal control node by omitting NODE.
+
+The Abaqus section card is supported at root and Assembly scope. Existing
+Part-defined surfaces and nodes can be referenced there as `INSTANCE.CUT`,
+`INSTANCE.900001` or `INSTANCE.CONTROL_SET`; assembly NSET aliases also work.
+Section cards inside PART or INSTANCE are rejected: automatic per-instance
+section creation and local-normal rotation are not implemented. Define one
+assembly section and one isolated node for each intended cut. Explicit normal
+components are global assembly components.
+
+An optional single data line gives a finite nonzero normal, e.g. `0, 0, -1`.
+Without it, the normal is the area-weighted average of the outward face normals;
+faces must have consistent orientation. This follows the Abaqus convention:
+a positive force acts along that normal on the underlying elements (the rewired
+B side of the merged cut), with the opposite force on side A. Positive U1 is
+`(u_B-u_A) dot normal`, a tightening adjustment. The normals of native merged
+sections and corresponding Abaqus sections therefore give the same sign.
+The tests check outward -Z, rotated -X and explicitly reversed +Z directions.
+These are analytical and native-equivalence checks; no Abaqus executable was
+used for a cross-solver comparison.
+
+Apply the scalar force in a linear static step:
+
+```text
+*STEP, NAME=TIGHTEN
+*STATIC
+1, 1
+*CLOAD
+900001, 1, 1000
+*END STEP
+*STEP, NAME=HOLD
+*STATIC
+1, 1
+*BOUNDARY, FIXED
+900001, 1, 1
+*END STEP
+```
+
+Alternatively replace CLOAD with `*BOUNDARY` and
+`900001, 1, 1, 0.001` to prescribe U1. FIXED is supported only for Abaqus
+pretension-node DOF 1, after a successfully solved prior adjustment, without a
+magnitude or amplitude. It snapshots U1 at the start of that step. Its resulting
+ordinary boundary condition persists until replaced or removed. Repeated FIXED
+snapshots the latest successful U1; an unexecuted or failed solve cannot supply
+it. General structural BOUNDARY,FIXED is outside this implementation.
+
+CLOAD and BOUNDARY use their existing independent history families:
+
+- `OP=MOD` replaces the addressed source/DOF and retains other definitions.
+  Scalar node references and singleton NSET aliases of one control node share
+  a normalized history target, so changing between them replaces the same slot.
+- `CLOAD,OP=NEW` removes previous concentrated-load targets, including a
+  pretension force, without removing a held boundary.
+- `BOUNDARY,OP=NEW` removes previous boundaries, including FIXED. Restate all
+  structural supports that must remain; the control DOF becomes free again.
+- FIXED does not delete a carried force. With force F and a held U1, the
+  scalar reaction is `TF-F`; the force is applied exactly once.
+- Without FIXED or a displacement boundary, the carried force remains a force
+  prescription. External loading then changes U1 while TF remains prescribed.
+- Existing relative STEP TIME amplitudes apply at the linear step end. BOUNDARY
+  magnitudes are scaled when materialized, and CLOAD uses its existing amplitude
+  evaluation. TOTAL TIME and nonlinear evolution are not supported here.
+
+Before any force/boundary has controlled an Abaqus section, FEMaster preserves
+native zero-gap behavior. **This differs from Abaqus's initially free control
+DOF.** After the first control definition, removing it releases q (even if all
+loads are removed); the section does not silently revert to its initial tie.
+
+Native PRETENSION actions and Abaqus node conditions cannot be mixed on one
+section. A force and a displacement on an Abaqus node are valid together;
+contradictory displacement equations are rejected by the supported exact
+constraint methods. DOFs 2–6, local nodal transformations, CLOAD orientations,
+reused or element-connected control nodes, zero/invalid normals, ELEMENT-based
+beam/truss sections and FOLLOWER=YES are rejected. Scalar control-node loads
+also require inertia relief and load rebalancing to be off.
+
+Reference conventions: [Abaqus 2025 section keyword](https://docs.software.vt.edu/abaqusv2025/English/SIMACAEKEYRefMap/simakey-r-pre-tensionsection.htm)
+and [assembly loads](https://docs.software.vt.edu/abaqusv2025/English/SIMACAEPRCRefMap/simaprc-c-pretension.htm).
+
 ## Constraint methods and limitations
 
 Use `*CONSTRAINTMETHOD, TYPE=NULLSPACE` (the default) or `TYPE=ELIMINATION`.
@@ -132,14 +229,20 @@ pretension section exists:
 Keep external supports away from the cut: a support reaction at an interface
 node cannot be separated from the cut reaction by this nodal result recovery.
 
-Both fields follow the existing output selection and are available in RES, FRD
+`TF` is a scalar nodal field containing the total signed axial section force
+at each control node, zero elsewhere. It satisfies `TF = RF1 + applied CLOAD1`;
+U1 gives q. RF at the control node includes the generalized holding reaction,
+while physical interface PTFORC retains the original nodal traction recovery.
+
+All three fields follow the existing output selection and are available in RES, FRD
 and FEMR. To request just displacement and pretension results in a load case:
 
 ```text
 *NODE FILE
-U, PTFORC, PTGAP
+U, RF, TF, PTFORC, PTGAP
 ```
 
+The RES section header identifies the scalar control node and DOF 1.
 Generated nodes appear in the result mesh with unique identifiers. User node
 sets keep their existing membership; only the global all-nodes region gains
 the generated nodes. Boundary surfaces owned by rewired elements follow their
@@ -156,6 +259,14 @@ Conflicting support/MPC prescriptions, an equation conflicting with a prescribed
 gap and supports conflicting with a locked gap must fail. Lagrange rejection
 and the unchanged default multiplier regularization without pretension are
 checked separately. A uniaxial bar with Poisson ratio zero provides the analytical reference `gap = force * length / (E * area)`.
+
+Additional checks cover the single active control DOF, explicit and generated
+nodes, native/Abaqus equivalence for both exact methods, scalar U/RF/TF,
+RES/FRD/FEMR output, two independent sections (one rotated), Assembly/Instance
+references, singleton NSETs, explicit and reversed normals, unloaded behavior,
+force carryover, CLOAD MOD/NEW, BOUNDARY NEW, FIXED with carried force and
+amplitudes. Invalid node references, shared control nodes, structural connectivity,
+transformations, DOFs and conflicting adjustments are rejected.
 
 With `FEMASTER_BUILD_TESTS=ON`, the feature checks can be built independently:
 
