@@ -64,9 +64,53 @@ Force control must complete a solve before it can be locked. The locked gap
 persists into later load cases; an additional `LOCK` is harmless. External loads
 then change the transmitted section force while preserving the gap. This is a
 sequence of linear equilibrium solves; nonlinear bolt/contact behavior is not
-included in this version. `NULLSPACE` and `ELIMINATION` use the normal constraint
-paths. For pretension models, `LAGRANGE` uses an unregularized multiplier block
-so the prescribed gap remains exact.
+included in this version.
+
+## Constraint methods and limitations
+
+Use `*CONSTRAINTMETHOD, TYPE=NULLSPACE` (the default) or `TYPE=ELIMINATION`.
+Both enforce the prescribed or locked gap through the existing affine reduction
+`u = u_p + T q`, to numerical tolerance. Supports and manual equations may be
+combined with pretension. Consistent redundant equations are accepted;
+inconsistent equations are rejected before the equilibrium solve and before a
+new solved gap is captured. This also applies when newly activated supports
+contradict a previously locked gap. Constraint feasibility alone does not
+guarantee structural stability.
+
+`LAGRANGE` is currently rejected whenever a pretension section is present,
+including an unloaded section. Select `NULLSPACE` or `ELIMINATION` explicitly
+if an existing input deck requests Lagrange multipliers. Models without
+pretension retain their existing constraint behavior and regularization.
+
+### Decision for the current upstream implementation (issue #1)
+
+The Lagrange implementation scales the constraint rows and assembles
+`[K, C_s^T; C_s, -r I]`, with
+`r = 1e-10 * max(abs(diag(K)))` (unit fallback for an unusable stiffness scale).
+The multiplier diagonal stabilizes redundant constraint rows, but changes the
+constraint equation to `C_s u - r lambda = d_s`: prescribed displacements are
+therefore approximate. Its build report sets `rank_known=false` and
+`feasible=true` without checking either rank or consistency.
+
+Setting `r=0` gives exact multipliers for a suitable independent, consistent
+constraint system. It is not reliable for all currently accepted inputs:
+duplicate equations make the multiplier system singular, and contradictory
+equations have no exact solution. The regression suite demonstrates the
+singular duplicate-row case. The previous pretension-specific global switch
+also changed support and MPC treatment throughout the model.
+
+`NULLSPACE` already uses sparse QR rank detection and checks the affine residual
+against the original equations. `ELIMINATION` substitutes dependent DOFs,
+recognizes redundant rows and detects contradictory rows. The pretension path
+now also rejects a non-feasible transformer report before solving, rather than
+only reporting the residual and continuing.
+
+Selective removal of regularization from pretension rows was considered and
+rejected for now: it would still approximate other constraints and would not
+resolve dependencies or contradictions spanning supports, MPCs and pretension.
+Supporting exact Lagrange later requires rank/consistency handling of the
+combined constraint system and validation of the saddle-point solver backends.
+No global constraint algorithm is changed in this feature.
 
 ## Results
 
@@ -98,8 +142,13 @@ updated node connectivity.
 
 The regression tests cover force and displacement control, locking, a subsequent
 external load, separate matching faces, invalid cuts, invalid lock ordering,
-explicit output selection and binary output. A uniaxial bar with Poisson ratio
-zero provides the analytical reference `gap = force * length / (E * area)`.
+explicit output selection and binary output. Both supported methods are tested
+with force and displacement control followed by LOCK and external loading,
+manual MPCs, scaled duplicate equations and equations redundant with supports.
+Conflicting support/MPC prescriptions, an equation conflicting with a prescribed
+gap and supports conflicting with a locked gap must fail. Lagrange rejection
+and the unchanged default multiplier regularization without pretension are
+checked separately. A uniaxial bar with Poisson ratio zero provides the analytical reference `gap = force * length / (E * area)`.
 
 With `FEMASTER_BUILD_TESTS=ON`, the feature checks can be built independently:
 

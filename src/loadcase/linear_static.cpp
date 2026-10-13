@@ -63,6 +63,11 @@ void LinearStatic::run() {
     logging::info(true, "===============================================================================================");
     logging::info(true, "");
 
+    const bool has_pretension = !model->_data->pretension_sections.empty();
+    logging::error(!has_pretension || constraint_method != ConstraintTransformer::Method::Lagrange,
+        "PRETENSION: LAGRANGE is unsupported because its multiplier path does not "
+        "check constraint rank or consistency. Use NULLSPACE or ELIMINATION.");
+
     // Prepare section assignments and analysis-local element state
     model->assign_sections();
     model->step_begin();
@@ -191,9 +196,6 @@ void LinearStatic::run() {
         [&]() {
             ConstraintTransformer::Options options;
             options.method = constraint_method;
-            if (!model->_data->pretension_sections.empty()) {
-                options.lagrange_regularization = Precision(0);
-            }
             return std::make_unique<ConstraintTransformer>(
                 equations,
                 active_dof_idx_mat,
@@ -203,6 +205,10 @@ void LinearStatic::run() {
         "building constraint transformer");
 
     logging::info(true, "");
+    logging::error(!has_pretension || transformer->feasible(),
+        "PRETENSION: inconsistent constraint equations (supports, equations or interface gap); "
+        "residual ||C u - d|| = ", transformer->report().residual_norm);
+
     logging::info(true, "Constraint summary");
     logging::up();
     logging::info(true, "m (rows of C)     : ", transformer->report().equations);

@@ -1,4 +1,7 @@
 #include "../src/io/reader/parser.h"
+#include "../src/constraints/transformer/constraint_transformer.h"
+
+#include <Eigen/LU>
 #include "../src/model/model.h"
 
 #include <gtest/gtest.h>
@@ -123,6 +126,12 @@ protected:
         // With nu=0 this is an exact uniaxial bar: gap=F L/(EA).
         replace(deck, "210000.0, 0.3", "210000.0, 0.0");
     }
+    void separate_faces() {
+        replace(deck, "*ELEMENT, TYPE=C3D8", "17, -1, -1, 1\n18, 1, -1, 1\n19, 1, 1, 1\n20, -1, 1, 1\n*ELEMENT, TYPE=C3D8");
+        replace(deck, "2, 5, 6, 7, 8, 9, 10, 11, 12", "2, 17, 18, 19, 20, 9, 10, 11, 12");
+        replace(deck, "*SURFACE, SFSET=CUT_FACE\n2, 2, 1\n*PRETENSIONSECTION, NAME=PT1, SURFACE_A=CUT_FACE",
+            "*SURFACE, SFSET=CUT_A\n1, 1, 2\n*SURFACE, SFSET=CUT_B\n2, 2, 1\n*PRETENSIONSECTION, NAME=PT1, SURFACE_A=CUT_A, SURFACE_B=CUT_B");
+    }
     void TearDown() override { std::filesystem::remove_all(directory); }
     void run(bool femr = false) {
         std::ofstream(directory / "model.inp") << deck;
@@ -182,21 +191,152 @@ TEST_F(Pretension, EliminationForceLockExternalLoad) {
     check(1000.0 * 3.0 / (210000.0 * 4.0));
 }
 
-TEST_F(Pretension, LagrangeForceLockExternalLoad) {
-    std::size_t position = 0;
-    while ((position = deck.find("TYPE=NULLSPACE", position)) != std::string::npos) {
-        deck.replace(position, 14, "TYPE=LAGRANGE");
-        position += 13;
+TEST_F(Pretension, RejectsLagrange) {
+    // Reject both an actively loaded section and an unloaded (tied) section.
+    for (const bool loaded : {true, false}) {
+        auto original = deck;
+        replace(deck, "TYPE=NULLSPACE", "TYPE=LAGRANGE");
+        if (!loaded) replace(deck,
+            "*PRETENSION, SECTION=PT1, ACTION=LOAD, CONTROL=FORCE, VALUE=1000.0", "");
+        try {
+            run();
+            FAIL() << "LAGRANGE must be rejected before solving";
+        } catch (const std::exception& error) {
+            EXPECT_NE(std::string(error.what()).find("Use NULLSPACE or ELIMINATION"), std::string::npos);
+        }
+        deck = original;
     }
+}
+
+TEST_F(Pretension, LagrangeWithoutPretensionKeepsExistingBehavior) {
+    replace(deck, "*PRETENSIONSECTION, NAME=PT1, SURFACE_A=CUT_FACE", "");
+    replace(deck, "*PRETENSION, SECTION=PT1, ACTION=LOAD, CONTROL=FORCE, VALUE=1000.0", "");
+    for (int step = 0; step < 2; ++step)
+        replace(deck, "*PRETENSION, SECTION=PT1, ACTION=LOCK", "");
+    for (int step = 0; step < 3; ++step)
+        replace(deck, "TYPE=NULLSPACE", "TYPE=LAGRANGE");
     run();
-    check(1000.0 * 3.0 / (210000.0 * 4.0));
+    EXPECT_TRUE(parser.model()._data->pretension_sections.empty());
+    const auto frames = read_frames(read_file(directory / "model.res"));
+    ASSERT_EQ(frames.size(), 3u);
+    for (const auto& frame : frames) {
+        EXPECT_EQ(frame.count("PTGAP"), 0u);
+        EXPECT_EQ(frame.count("PTFORC"), 0u);
+        for (const auto& row : frame.at("DISPLACEMENT"))
+            for (const auto value : row) EXPECT_TRUE(std::isfinite(value));
+    }
+    for (const auto& row : frames[0].at("DISPLACEMENT"))
+        for (const auto value : row) EXPECT_NEAR(value, 0, 1e-12);
+    EXPECT_LT(frames[2].at("DISPLACEMENT").at(8).at(2), 0);
+}
+
+class PretensionExact : public Pretension, public testing::WithParamInterface<const char*> {
+protected:
+    void select_method() {
+        std::size_t position = 0;
+        const std::string method = std::string("TYPE=") + GetParam();
+        while ((position = deck.find("TYPE=NULLSPACE", position)) != std::string::npos) {
+            deck.replace(position, 14, method);
+            position += method.size();
+        }
+    }
+    void add_equations(const std::string& equations) {
+        replace(deck, "*LOADCASE, TYPE=LINEARSTATIC, NAME=FORCE_PRETENSION",
+            equations + "*LOADCASE, TYPE=LINEARSTATIC, NAME=FORCE_PRETENSION");
+    }
+};
+
+TEST_P(PretensionExact, ForceAndDisplacementWithMixedRedundantConstraints) {
+    const auto original = deck;
+    for (const bool displacement : {false, true}) {
+        deck = original;
+        select_method();
+        if (displacement) replace(deck, "CONTROL=FORCE, VALUE=1000.0",
+            "CONTROL=DISPLACEMENT, VALUE=0.0035714285714285714");
+        // A manual transverse MPC away from the cut, its scaled duplicate,
+        // and an equation already implied by the end supports.
+        add_equations("*EQUATION\n2\n9, 1, 1, 10, 1, -1\n"
+                      "*EQUATION\n2\n9, 1, 2, 10, 1, -2\n"
+                      "*EQUATION\n2\n1, 3, 1, 13, 3, -1\n");
+        run();
+        check(1000.0 * 3.0 / (210000.0 * 4.0));
+    }
+}
+
+TEST_P(PretensionExact, RejectsContradictoryMixedConstraints) {
+    select_method();
+    replace(deck, "ENDS, 0.0, 0.0, 0.0, NAN, NAN, NAN",
+        "ENDS, 0.0, 0.0, 0.0, NAN, NAN, NAN\n13, 0.0, 0.0, 0.01, NAN, NAN, NAN");
+    add_equations("*EQUATION\n2\n1, 3, 1, 13, 3, -1\n");
+    try {
+        run();
+        FAIL() << "Conflicting supports and equations must be rejected";
+    } catch (const std::exception& error) {
+        EXPECT_NE(std::string(error.what()).find("inconsistent"), std::string::npos);
+    }
+    EXPECT_FALSE(parser.model()._data->pretension_sections.at(0)->has_solved_gap);
+}
+
+TEST_P(PretensionExact, RejectsConstraintsConflictingWithPrescribedOrLockedGap) {
+    const auto original = deck;
+    for (const bool locked : {false, true}) {
+        deck = original;
+        select_method();
+        separate_faces();
+        const std::string equation = "*EQUATION\n2\n5, 3, 1, 17, 3, -1\n";
+        if (locked) {
+            // EQUATION definitions are global. Activate new supports only in
+            // the LOCK step to conflict with the previously solved nonzero gap.
+            replace(deck, "*LOADCASE, TYPE=LINEARSTATIC, NAME=LOCK_SOLVED_GAP",
+                "*LOADCASE, TYPE=LINEARSTATIC, NAME=LOCK_SOLVED_GAP\n"
+                "*SUPPORT\n5, NAN, NAN, 0, NAN, NAN, NAN\n"
+                "17, NAN, NAN, 0, NAN, NAN, NAN");
+        } else {
+            replace(deck, "CONTROL=FORCE, VALUE=1000.0",
+                "CONTROL=DISPLACEMENT, VALUE=0.0035714285714285714");
+            add_equations(equation);
+        }
+        try {
+            run();
+            FAIL() << "Zero-gap constraints cannot coexist with a nonzero prescribed gap";
+        } catch (const std::exception& error) {
+            EXPECT_NE(std::string(error.what()).find("inconsistent"), std::string::npos);
+        }
+        const auto& section = *parser.model()._data->pretension_sections.at(0);
+        EXPECT_EQ(section.has_solved_gap, locked);
+        if (locked) EXPECT_NEAR(std::abs(section.last_solved_gap),
+            1000.0 * 3.0 / (210000.0 * 4.0), 1e-10);
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(Methods, PretensionExact,
+    testing::Values("NULLSPACE", "ELIMINATION"));
+
+TEST(PretensionConstraintDecision, LagrangeRegularizationAndRedundantRows) {
+    using Transformer = constraint::ConstraintTransformer;
+    SystemDofIds dofs(1, 6);
+    dofs.setConstant(-1);
+    dofs(0, 0) = 0;
+    // Same DOF prescribed twice: admissible for reduced methods, singular
+    // for exact multipliers. No pretension sections are involved here.
+    constraint::Equations equations = {{{{0, 0, 1}}, 0}, {{{0, 0, 1}}, 0}};
+    SparseMatrix stiffness(1, 1);
+    stiffness.insert(0, 0) = 100;
+    Transformer::Options options;
+    options.method = Transformer::Method::Lagrange;
+    Transformer regularized(equations, dofs, 1, options);
+    const auto matrix = regularized.assemble_system_matrix(stiffness);
+    EXPECT_NEAR(matrix.coeff(1, 1), -1e-8, 1e-20);
+    EXPECT_NEAR(matrix.coeff(2, 2), -1e-8, 1e-20);
+    EXPECT_FALSE(regularized.rank_known());
+    options.lagrange_regularization = 0;
+    Transformer exact(equations, dofs, 1, options);
+    const DynamicMatrix dense(exact.assemble_system_matrix(stiffness));
+    EXPECT_LT(dense.fullPivLu().rank(), dense.rows());
 }
 
 TEST_F(Pretension, SeparateMatchingFaces) {
-    replace(deck, "*ELEMENT, TYPE=C3D8", "17, -1, -1, 1\n18, 1, -1, 1\n19, 1, 1, 1\n20, -1, 1, 1\n*ELEMENT, TYPE=C3D8");
-    replace(deck, "2, 5, 6, 7, 8, 9, 10, 11, 12", "2, 17, 18, 19, 20, 9, 10, 11, 12");
-    replace(deck, "*SURFACE, SFSET=CUT_FACE\n2, 2, 1\n*PRETENSIONSECTION, NAME=PT1, SURFACE_A=CUT_FACE",
-        "*SURFACE, SFSET=CUT_A\n1, 1, 2\n*SURFACE, SFSET=CUT_B\n2, 2, 1\n*PRETENSIONSECTION, NAME=PT1, SURFACE_A=CUT_A, SURFACE_B=CUT_B");
+    separate_faces();
     // SURFACE_A points in the opposite direction in this equivalent deck.
     replace(deck, "VALUE=1000.0", "VALUE=-1000.0");
     run();
