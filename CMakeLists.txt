@@ -556,5 +556,7 @@ add_custom_target(femaster-info
 option(FEMASTER_BUILD_BENCHMARKS "Build pretension mesh preparation benchmark" OFF)
 if(FEMASTER_BUILD_BENCHMARKS)
     add_executable(FEMaster_pretension_benchmark benchmarks/pretension_prepare.cpp)
+    add_executable(FEMaster_pretension_matching benchmarks/pretension_matching.cpp)
+    target_link_libraries(FEMaster_pretension_matching PRIVATE femaster_core)
     target_link_libraries(FEMaster_pretension_benchmark PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,femaster_core>")
 endif()

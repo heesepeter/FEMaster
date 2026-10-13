@@ -58,8 +58,60 @@ std::set<ID> surface_owners(ModelData& data, const std::string& set_name) {
     return owners;
 }
 
+// Geometry is checked on the original mesh, before any cut nodes are appended.
+void validate_interface_geometry(ModelData& data,
+                                 pretension::PretensionSection& section,
+                                 const std::set<ID>& nodes_a,
+                                 const Vec3& center_a, const Vec3& center_b,
+                                 Precision tolerance) {
+    Vec3 axis = center_b - center_a;
+    if (axis.norm() <= tolerance) {
+        SurfacePtr reference;
+        for (const ID surface_id : *data.surface_sets.get(
+                 section.interface_surface_set_a)) {
+            if (surface_id >= 0 &&
+                surface_id < static_cast<ID>(data.surfaces.size())) {
+                reference = data.surfaces[static_cast<std::size_t>(surface_id)];
+                if (reference) break;
+            }
+        }
+        logging::error(reference != nullptr,
+            "PRETENSION SECTION '", section.name,
+            "': SURFACE_A contains no valid surface");
+        axis = reference->normal(*data.positions, Vec2::Zero());
+    }
+    logging::error(axis.allFinite() && axis.norm() > Precision(0),
+        "PRETENSION SECTION '", section.name,
+        "': cannot determine interface axis");
+    section.axis_direction = axis.normalized();
+    for (const ID node : nodes_a) {
+        logging::error(std::abs(section.axis_direction.dot(
+            data.positions->row_vec3(static_cast<Index>(node)) - center_a)) <= tolerance,
+            "PRETENSION SECTION '", section.name, "': interface must be planar");
+    }
+    if (section.nodal_control) {
+        // Abaqus positive load acts on the underlying (rewired B) side along
+        // the outward average surface normal. Native q uses the same B-A sign.
+        Vec3 normal = Vec3::Zero();
+        for (const ID id : *data.surface_sets.get(section.interface_surface_set_a)) {
+            const auto& surface = data.surfaces[id];
+            normal += surface->area(*data.positions) * surface->normal(*data.positions, Vec2::Zero());
+        }
+        logging::error(normal.allFinite() && normal.norm() > Precision(0),
+            "PRE-TENSION SECTION: cannot determine average normal");
+        normal.normalize();
+        for (const ID id : *data.surface_sets.get(section.interface_surface_set_a))
+            logging::error(normal.dot(data.surfaces[id]->normal(*data.positions, Vec2::Zero())) > Precision(0.999999),
+                "PRE-TENSION SECTION: inconsistent surface orientation");
+        section.axis_direction = section.normal_override.isZero()
+            ? normal : section.normal_override.normalized();
+    }
+
+}
+
 void prepare_surface_pair(ModelData& data,
-                          pretension::PretensionSection& section) {
+                          pretension::PretensionSection& section,
+                          const std::vector<std::vector<ID>>& node_elements) {
     for (const auto& set_name : {section.interface_surface_set_a, section.interface_surface_set_b}) {
         for (const ID surface : *data.surface_sets.get(set_name)) {
             logging::error(surface >= 0 && surface < static_cast<ID>(data.surface_element_ids.size()),
@@ -108,6 +160,8 @@ void prepare_surface_pair(ModelData& data,
         }
     }
 
+    // Match coincident nodes; keep deterministic nearest-node/tie ordering.
+    // ponytail: quadratic matching; add spatial search if larger cuts justify it.
     std::map<ID, ID> pairs;
     std::set<ID> unused_b = nodes_b;
     for (const ID node_a : nodes_a) {
@@ -132,11 +186,14 @@ void prepare_surface_pair(ModelData& data,
         "PRETENSION SECTION '", section.name,
         "': not all SURFACE_B nodes could be paired");
 
+    validate_interface_geometry(data, section, nodes_a, center_a, center_b, tolerance);
+
     std::set<ID> shared_nodes;
     for (const auto& [node_a, node_b] : pairs) {
         if (node_a == node_b) shared_nodes.insert(node_a);
     }
 
+    std::set<ID> side_b_elements;
     std::map<ID, ID> duplicated_b;
     if (!shared_nodes.empty()) {
         const auto seeds = surface_owners(data, section.interface_surface_set_b);
@@ -144,16 +201,7 @@ void prepare_surface_pair(ModelData& data,
             "PRETENSION SECTION '", section.name,
             "': SURFACE_B has no owning solid elements");
 
-        std::map<ID, std::vector<ID>> node_elements;
-        for (const auto& element : data.elements) {
-            if (!element) continue;
-            for (const ID node : *element) {
-                if (!shared_nodes.count(node)) {
-                    node_elements[node].push_back(element->elem_id);
-                }
-            }
-        }
-        std::set<ID> side_b_elements = seeds;
+        side_b_elements = seeds;
         std::deque<ID> queue(seeds.begin(), seeds.end());
         while (!queue.empty()) {
             const ID element_id = queue.front();
@@ -168,29 +216,42 @@ void prepare_surface_pair(ModelData& data,
         }
         for (const ID node : shared_nodes) {
             bool retained = false;
-            for (const auto& element : data.elements) {
-                if (!element || side_b_elements.count(element->elem_id)) continue;
-                for (const ID connected : *element) retained |= connected == node;
-            }
+            for (const ID element : node_elements[node])
+                retained |= !side_b_elements.count(element);
             logging::error(retained, "PRETENSION SECTION '", section.name,
                 "': surface does not separate two element regions");
         }
-        for (const ID node : shared_nodes) {
-            duplicated_b[node] = data.append_node(
-                data.positions->row_vec3(static_cast<Index>(node)));
-        }
-        for (const ID element_id : side_b_elements) {
-            auto& element = data.elements[static_cast<std::size_t>(element_id)];
-            for (const auto& [old_node, new_node] : duplicated_b) {
-                bool contains = false;
-                for (const ID node : *element) contains |= node == old_node;
-                if (contains) {
-                    const auto* structural = element->as<StructuralElement>();
-                    logging::error(structural && structural->is_solid() && element->replace_node(old_node, new_node),
-                        "PRETENSION SECTION: splitting requires supported solid elements");
-                }
+        // Check every affected element before the first topology mutation.
+        for (const ID node : shared_nodes)
+            for (const ID id : node_elements[node]) {
+                if (!side_b_elements.count(id)) continue;
+                const auto* solid = data.elements[id]->as<StructuralElement>();
+                logging::error(solid && solid->is_solid(),
+                    "PRETENSION SECTION: splitting requires supported solid elements");
             }
-        }
+    }
+
+    // Allocate the cut copies and the native scalar control in one batch.
+    std::vector<Vec3> new_positions;
+    new_positions.reserve(shared_nodes.size() + (section.control_node < 0));
+    for (const ID node : shared_nodes)
+        new_positions.push_back(data.positions->row_vec3(node));
+    if (section.control_node < 0) new_positions.push_back(Vec3::Zero());
+    if (!new_positions.empty()) {
+        const ID first = data.append_nodes(new_positions);
+        ID next = first;
+        for (const ID node : shared_nodes) duplicated_b.emplace(node, next++);
+        if (section.control_node < 0) section.control_node = next;
+    }
+
+    // Rewire only incident elements, then let all owned boundary faces follow.
+    if (!shared_nodes.empty()) {
+        for (const auto& [old_node, new_node] : duplicated_b)
+            for (const ID element_id : node_elements[old_node]) {
+                if (!side_b_elements.count(element_id)) continue;
+                logging::error(data.elements[element_id]->replace_node(old_node, new_node),
+                    "PRETENSION SECTION: splitting requires supported solid elements");
+            }
         // Every boundary on rewired elements must follow the new connectivity,
         // including surfaces later used by pressure, tie or contact definitions.
         for (ID surface_id = 0; surface_id < static_cast<ID>(data.surfaces.size()); ++surface_id) {
@@ -212,48 +273,6 @@ void prepare_surface_pair(ModelData& data,
         section.interface_pairs.push_back({node_a, node_b});
     }
 
-    Vec3 axis = center_b - center_a;
-    if (axis.norm() <= tolerance) {
-        SurfacePtr reference;
-        for (const ID surface_id : *data.surface_sets.get(
-                 section.interface_surface_set_a)) {
-            if (surface_id >= 0 &&
-                surface_id < static_cast<ID>(data.surfaces.size())) {
-                reference = data.surfaces[static_cast<std::size_t>(surface_id)];
-                if (reference) break;
-            }
-        }
-        logging::error(reference != nullptr,
-            "PRETENSION SECTION '", section.name,
-            "': SURFACE_A contains no valid surface");
-        axis = reference->normal(*data.positions, Vec2::Zero());
-    }
-    logging::error(axis.norm() > Precision(0),
-        "PRETENSION SECTION '", section.name,
-        "': cannot determine interface axis");
-    section.axis_direction = axis.normalized();
-    for (const ID node : nodes_a) {
-        logging::error(std::abs(section.axis_direction.dot(
-            data.positions->row_vec3(static_cast<Index>(node)) - center_a)) <= tolerance,
-            "PRETENSION SECTION '", section.name, "': interface must be planar");
-    }
-    if (section.nodal_control) {
-        // Abaqus positive load acts on the underlying (rewired B) side along
-        // the outward average surface normal. Native q uses the same B-A sign.
-        Vec3 normal = Vec3::Zero();
-        for (const ID id : *data.surface_sets.get(section.interface_surface_set_a)) {
-            const auto& surface = data.surfaces[id];
-            normal += surface->area(*data.positions) * surface->normal(*data.positions, Vec2::Zero());
-        }
-        logging::error(normal.allFinite() && normal.norm() > Precision(0),
-            "PRE-TENSION SECTION: cannot determine average normal");
-        normal.normalize();
-        for (const ID id : *data.surface_sets.get(section.interface_surface_set_a))
-            logging::error(normal.dot(data.surfaces[id]->normal(*data.positions, Vec2::Zero())) > Precision(0.999999),
-                "PRE-TENSION SECTION: inconsistent surface orientation");
-        section.axis_direction = section.normal_override.isZero()
-            ? normal : section.normal_override.normalized();
-    }
     logging::info(true, "PRETENSIONSECTION '", section.name,
         "': paired ", section.interface_pairs.size(),
         " interface node(s), split ", shared_nodes.size(), " shared node(s)");
@@ -266,22 +285,22 @@ void Model::prepare_pretension_sections() {
         logging::error(section != nullptr,
             "PRETENSION SECTION: null section encountered");
         if (section->prepared) continue;
+        // Rebuild per section: an earlier independent cut may have changed IDs.
+        std::vector<std::vector<ID>> node_elements(_data->positions->rows);
+        for (const auto& element : _data->elements) {
+            if (!element) continue;
+            for (const ID node : *element) node_elements[node].push_back(element->elem_id);
+        }
         if (section->control_node >= 0) {
             logging::error(section->control_node < _data->positions->rows,
                 "PRETENSION SECTION: invalid control node");
             for (const auto& other : _data->pretension_sections)
                 logging::error(other == section || other->control_node != section->control_node,
                     "PRETENSION SECTION: control node used by multiple sections");
-            for (const auto& element : _data->elements) {
-                if (!element) continue;
-                for (const ID node : *element)
-                    logging::error(node != section->control_node,
-                        "PRETENSION SECTION: control node must not be attached to an element");
-            }
+            logging::error(node_elements[section->control_node].empty(),
+                "PRETENSION SECTION: control node must not be attached to an element");
         }
-        prepare_surface_pair(*_data, *section);
-        if (section->control_node < 0)
-            section->control_node = _data->append_node(Vec3::Zero());
+        prepare_surface_pair(*_data, *section, node_elements);
         section->prepared = true;
     }
 }

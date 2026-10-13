@@ -57,3 +57,10 @@ For a baseline checkout use `f1213472` and copy only the benchmark source and it
 opt-in CMake target. Later issue #4 runs include one additional control node per
 section; they must not be labeled as the original baseline. Pair matching and
 all topology algorithms remain unchanged by issue #4.
+
+## Direct comparison after issue #4
+
+The historical measurements above remain unchanged. The rebuilt `914c3a11`
+reference, issue #2 optimization, isolated matching timings, separate solver
+measurements and reproduction instructions are in
+[issue #2 validation](pretension-issue2-validation.md).

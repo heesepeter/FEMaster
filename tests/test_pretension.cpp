@@ -3,6 +3,8 @@
 
 #include <Eigen/LU>
 #include "../src/model/model.h"
+#include "../src/model/solid/c3d8.h"
+#include <Eigen/Geometry>
 
 #include <gtest/gtest.h>
 
@@ -618,6 +620,9 @@ TEST_F(Pretension, RejectsLockBeforeLoad) {
 TEST_F(Pretension, RejectsExteriorFaceAsMergedCut) {
     replace(deck, "2, 2, 1\n*PRETENSIONSECTION", "2, 1, 1\n*PRETENSIONSECTION");
     EXPECT_THROW(run(), std::exception);
+    EXPECT_EQ(parser.model()._data->positions->rows, 16);
+    EXPECT_EQ(parser.model()._data->node_mapping.size(), 16);
+    EXPECT_EQ(parser.model()._data->pretension_sections[0]->control_node, -1);
 }
 
 TEST_F(Pretension, RejectsMissingLoadValue) {
@@ -646,3 +651,74 @@ TEST_F(Pretension, ExplicitOutputSelection) {
 }
 
 } // namespace
+
+// A larger, obliquely rotated cut checks dense IDs, reference positions and
+// every boundary face against its owning element, including the outer faces.
+TEST(PretensionPreparation, LargeRotatedCutAndGeneratedResultIds) {
+    model::Model model;
+    const int n = 16;
+    const auto node = [](int x, int y, int z) { return z*(n+1)*(n+1)+y*(n+1)+x; };
+    const Mat3 rotation = Eigen::AngleAxis<Precision>(0.63, Vec3(1,2,3).normalized()).toRotationMatrix();
+    for (int z=0; z<4; ++z) for (int y=0; y<=n; ++y) for (int x=0; x<=n; ++x) {
+        const Vec3 p = rotation * Vec3(Precision(x)/n, Precision(y)/n, z);
+        model.set_node(node(x,y,z), p.x(), p.y(), p.z());
+    }
+    auto part = model._data->parts.get();
+    int e=0, surface=0;
+    std::vector<int> face_ids;
+    for (int z=0; z<3; ++z) for (int y=0; y<n; ++y) for (int x=0; x<n; ++x) {
+        model.set_element<model::C3D8>(e,
+            node(x,y,z),node(x+1,y,z),node(x+1,y+1,z),node(x,y+1,z),
+            node(x,y,z+1),node(x+1,y,z+1),node(x+1,y+1,z+1),node(x,y+1,z+1));
+        part->surface_sets.activate("BOUNDARIES");
+        for (int face=1; face<=6; ++face) { model.set_surface(surface++,e,face); face_ids.push_back(face); }
+        if (z==1) {
+            part->surface_sets.activate("CUT");
+            model.set_surface(surface++,e,1);
+            face_ids.push_back(1);
+        }
+        ++e;
+    }
+    model.compile();
+    // A high semantic ID forces batch assignment to scan the mapping rather
+    // than assuming that dense and semantic IDs coincide.
+    const auto instance = model._data->instances.get(model::Model::DEFAULT_INSTANCE_NAME);
+    model._data->node_mapping[0] = {instance, 900001};
+    model.add_pretension_interface_section("PT", "CUT", "CUT");
+    const auto before = model._data->positions->rows;
+    model.prepare_pretension_sections();
+    const auto& data = *model._data;
+    const auto& section = *data.pretension_sections[0];
+    ASSERT_EQ(section.interface_pairs.size(), (n+1)*(n+1));
+    EXPECT_EQ(data.positions->rows, before + (n+1)*(n+1) + 1);
+    EXPECT_EQ(section.control_node, data.positions->rows-1);
+    EXPECT_NEAR(std::abs(section.axis_direction.dot(rotation*Vec3::UnitZ())), 1, 1e-12);
+    for (Index i=before; i<data.positions->rows; ++i) {
+        EXPECT_EQ(std::get<1>(data.node_mapping[i]), 900002+i-before);
+        EXPECT_EQ((data.positions->row_vec3(i)-data.positions_reference->row_vec3(i)).norm(), 0);
+    }
+    for (const auto& pair : section.interface_pairs) {
+        EXPECT_NE(pair.side_a, pair.side_b);
+        EXPECT_EQ((data.positions->row_vec3(pair.side_a)-data.positions->row_vec3(pair.side_b)).norm(), 0);
+    }
+    for (std::size_t i=0; i<data.surfaces.size(); ++i) {
+        const auto expected = data.elements[data.surface_element_ids[i]]->surface(face_ids[i]);
+        for (Index j=0; j<expected->n_nodes; ++j)
+            EXPECT_EQ(data.surfaces[i]->nodes()[j], expected->nodes()[j]);
+    }
+    model.prepare_pretension_sections();
+    EXPECT_EQ(data.positions->rows, before + (n+1)*(n+1) + 1);
+}
+
+TEST_F(Pretension, InvalidGeometryDoesNotMutateTopology) {
+    replace(deck, "7,   1,  1, 1", "7,   1,  1, 1.2");
+    EXPECT_THROW(run(), std::exception);
+    const auto& data = *parser.model()._data;
+    EXPECT_EQ(data.positions->rows, 16);
+    EXPECT_EQ(data.node_mapping.size(), 16);
+    EXPECT_FALSE(data.pretension_sections[0]->prepared);
+    EXPECT_EQ(data.pretension_sections[0]->control_node, -1);
+    // Compiled dense cut nodes are 4..7; no duplicates may be installed.
+    for (const auto& element : data.elements)
+        for (const ID node : *element) EXPECT_LT(node, 16);
+}

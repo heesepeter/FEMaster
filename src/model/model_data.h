@@ -115,8 +115,8 @@ struct ModelData {
     std::vector<LinePtr>    lines;
     std::vector<ID>         surface_element_ids;
 
-    // Post-compile node duplication used to separate a merged face pair.
-    ID append_node(const Vec3& position);
+    // Append compiled cut/control nodes in one field resize; returns first dense ID.
+    ID append_nodes(const std::vector<Vec3>& positions);
 
     // Auxiliary point elements created from post-compile FEMaster POINTMASS
     // commands. They reference compiled node ids but deliberately stay outside
