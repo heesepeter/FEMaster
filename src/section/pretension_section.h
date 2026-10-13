@@ -33,6 +33,9 @@ struct PretensionSection {
     std::string interface_surface_set_a;
     std::string interface_surface_set_b;
 
+    ID control_node = -1; // Dense node ID; only component 0 is active.
+    Precision total_force = 0;
+
     Vec3 axis_direction = Vec3::UnitX();
     std::vector<InterfacePair> interface_pairs;
     Control control = Control::Displacement;

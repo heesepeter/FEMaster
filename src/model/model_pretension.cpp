@@ -249,7 +249,22 @@ void Model::prepare_pretension_sections() {
         logging::error(section != nullptr,
             "PRETENSION SECTION: null section encountered");
         if (section->prepared) continue;
+        if (section->control_node >= 0) {
+            logging::error(section->control_node < _data->positions->rows,
+                "PRETENSION SECTION: invalid control node");
+            for (const auto& other : _data->pretension_sections)
+                logging::error(other == section || other->control_node != section->control_node,
+                    "PRETENSION SECTION: control node used by multiple sections");
+            for (const auto& element : _data->elements) {
+                if (!element) continue;
+                for (const ID node : *element)
+                    logging::error(node != section->control_node,
+                        "PRETENSION SECTION: control node must not be attached to an element");
+            }
+        }
         prepare_surface_pair(*_data, *section);
+        if (section->control_node < 0)
+            section->control_node = _data->append_node(Vec3::Zero());
         section->prepared = true;
     }
 }
@@ -263,7 +278,7 @@ void Model::set_pretension_load(const std::string& name,
         section->control = control;
         section->prescribed_value = value;
         section->state = pretension::State::Loading;
-        if (control == pretension::Control::Force) section->has_solved_gap = false;
+        section->has_solved_gap = false;
         return;
     }
     logging::error(false, "PRETENSION: section ", name, " does not exist");
@@ -274,14 +289,11 @@ void Model::lock_pretension_section(const std::string& name) {
         if (!section || section->name != name) continue;
         logging::error(section->state != pretension::State::Open,
             "PRETENSION LOCK: section ", name, " has not been loaded yet");
-        if (section->control == pretension::Control::Force) {
+        if (section->state != pretension::State::Locked) {
             logging::error(section->has_solved_gap,
-                "PRETENSION LOCK: force-controlled section ", name,
-                " has no solved gap to lock");
+                "PRETENSION LOCK: section ", name, " has no solved gap to lock");
             section->locked_gap = section->last_solved_gap;
             section->control = pretension::Control::Displacement;
-        } else if (section->state == pretension::State::Loading) {
-            section->locked_gap = section->prescribed_value;
         }
         section->state = pretension::State::Locked;
         logging::info(true, "PRETENSION '", name,

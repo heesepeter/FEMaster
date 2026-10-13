@@ -305,12 +305,15 @@ void LinearStatic::run() {
 
     model::Field pretension_force, pretension_gap;
     if (!model->_data->pretension_sections.empty()) {
-        pretension_force = model->build_pretension_force_matrix();
+        pretension_force = model::Field{"PRETENSION_FORCE", model::FieldDomain::NODE,
+            model->_data->field_rows(model::FieldDomain::NODE), 3};
+        pretension_force.set_zero();
         pretension_gap = model->build_pretension_gap_matrix(global_disp_mat);
     }
     // The interface force includes constraint reactions after LOCK. Subtract
     // other external loads so PTFORC remains the force transmitted by the cut.
     for (const auto& section : model->_data->pretension_sections) {
+        section->total_force = 0;
         for (const auto& pair : section->interface_pairs) {
             for (const ID node : {pair.side_a, pair.side_b}) {
                 for (Dim component = 0; component < 3; ++component) {
@@ -319,6 +322,11 @@ void LinearStatic::run() {
                 }
             }
         }
+        for (const auto& pair : section->interface_pairs)
+            for (Dim component = 0; component < 3; ++component)
+                section->total_force += pretension_force(pair.side_b, component) * section->axis_direction(component);
+        pretension_force(section->control_node, 0) = section->total_force;
+        pretension_gap(section->control_node, 0) = global_disp_mat(section->control_node, 0);
     }
 
     Timer::measure(

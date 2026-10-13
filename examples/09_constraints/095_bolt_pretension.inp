@@ -1,3 +1,5 @@
+** Native syntax creates an isolated scalar control node (U1=PTGAP).
+** Its PTFORC component 1 reports the total section force.
 ** Face-pair bolt pretension: force loading, locking, then external loading.
 ** See documentation/pretension.md for syntax, output and current scope.
 *MODEL, NAME=PRETENSION_FACE_PAIR_LOADSTEPS

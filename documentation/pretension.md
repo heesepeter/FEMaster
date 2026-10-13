@@ -49,9 +49,13 @@ Alternatively, prescribe the relative displacement:
 *PRETENSION, SECTION=PT1, ACTION=LOAD, CONTROL=DISPLACEMENT, VALUE=0.001
 ```
 
-The faces remain tied in both transverse directions. Force control leaves one
-common axial gap free and distributes the total force equally over the node
-pairs. Displacement control prescribes that common gap. A section without a
+The faces remain tied in both transverse directions. Each section owns a control node with only DOF 1 active. Its scalar displacement
+q satisfies `(u_B-u_A) dot axis = q` for every pair. Force control applies the
+entire force to q, without additional pair loads; displacement control prescribes
+q. No artificial mass or stiffness is added. Native sections create a unique
+internal node unless `NODE=number` or a singleton NSET names an existing isolated
+node. Control-node coordinates do not affect the physics. Element-connected
+nodes, shared control nodes and local transformations are rejected. A section without a
 load action remains tied with zero gap.
 
 In the next load case, lock the solved gap:
@@ -117,10 +121,13 @@ No global constraint algorithm is changed in this feature.
 Linear-static default output includes the following nodal fields when a
 pretension section exists:
 
-- `PTGAP`: measured axial gap, written on both nodes of each interface pair.
+- `PTGAP`: measured axial gap, written on both nodes of each interface pair and
+  on the control node (also available as U1).
 - `PTFORC`: force transmitted by the interface, including constraint reactions
   after locking. Sum the vectors on one face and project onto the section axis
-  to obtain the signed axial resultant. Other nodes contain zero.
+  to obtain the signed axial resultant. The control node stores this resultant
+  in component 1; `PretensionSection::total_force` exposes it to C++ callers.
+  Other nodes contain zero. RF alone is not the total force at the control node.
 
 Keep external supports away from the cut: a support reaction at an interface
 node cannot be separated from the cut reaction by this nodal result recovery.
@@ -158,3 +165,5 @@ ctest --test-dir build/upstream-master-openmp -R Pretension --output-on-failure
 ```
 
 Replace the build directory with the one used by your local configuration.
+
+The solver-free baseline for issue #2 is recorded in [pretension-benchmark.md](pretension-benchmark.md).

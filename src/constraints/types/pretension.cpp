@@ -79,27 +79,15 @@ Equations get_pretension_equations(
         }
     }
 
-    if (force_control) {
-        // Leave one collective axial gap free and constrain all remaining
-        // pair gaps to it. The distributed nodal forces then act on exactly
-        // this single generalized pretension displacement.
-        const auto& reference_pair = section.interface_pairs.front();
-        for (Index i = 1; i < section.interface_pairs.size(); ++i) {
-            std::vector<EquationEntry> entries;
-            entries.reserve(12);
-            append_projection(entries, section.interface_pairs[i], axis, Precision(1));
-            append_projection(entries, reference_pair, axis, Precision(-1));
-            add_equation(std::move(entries), Precision(0));
-        }
-    } else {
-        // Displacement loading and LOCK prescribe the collective gap.
-        for (const auto& pair : section.interface_pairs) {
-            std::vector<EquationEntry> entries;
-            entries.reserve(6);
-            append_projection(entries, pair, axis, Precision(1));
-            add_equation(std::move(entries), normal_gap);
-        }
+    // Each axial pair gap equals the single scalar generalized displacement q.
+    for (const auto& pair : section.interface_pairs) {
+        std::vector<EquationEntry> entries;
+        append_projection(entries, pair, axis, Precision(1));
+        entries.push_back({section.control_node, 0, Precision(-1)});
+        add_equation(std::move(entries), Precision(0));
     }
+    if (!force_control)
+        add_equation({{section.control_node, 0, Precision(1)}}, normal_gap);
 
     return equations;
 }

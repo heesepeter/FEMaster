@@ -10,18 +10,7 @@ Field Model::build_pretension_force_matrix() {
         if (!section || section->state != pretension::State::Loading ||
             section->control != pretension::Control::Force ||
             section->interface_pairs.empty()) continue;
-        const Precision norm = section->axis_direction.norm();
-        logging::error(norm > Precision(0),
-            "Pretension section '", section->name, "' has a zero axis direction");
-        const Vec3 axis = section->axis_direction / norm;
-        const Precision pair_force = section->prescribed_value /
-            static_cast<Precision>(section->interface_pairs.size());
-        for (const auto& pair : section->interface_pairs) {
-            for (Dim component = 0; component < 3; ++component) {
-                force(static_cast<Index>(pair.side_a), component) -= pair_force * axis(component);
-                force(static_cast<Index>(pair.side_b), component) += pair_force * axis(component);
-            }
-        }
+        force(section->control_node, 0) = section->prescribed_value;
     }
     return force;
 }
@@ -53,20 +42,7 @@ void Model::capture_pretension_gaps(const Field& displacement) {
     for (const auto& section : _data->pretension_sections) {
         if (!section || section->state == pretension::State::Open ||
             section->interface_pairs.empty()) continue;
-        const Vec3 axis = section->axis_direction.normalized();
-        Precision sum = 0;
-        Index count = 0;
-        for (const auto& pair : section->interface_pairs) {
-            const Vec3 relative =
-                displacement.row_vec3(static_cast<Index>(pair.side_b)) -
-                displacement.row_vec3(static_cast<Index>(pair.side_a));
-            sum += axis.dot(relative);
-            ++count;
-        }
-        logging::error(count > 0,
-            "Pretension section '", section->name,
-            "' has no valid interface pair for gap capture");
-        section->last_solved_gap = sum / static_cast<Precision>(count);
+        section->last_solved_gap = displacement(section->control_node, 0);
         section->has_solved_gap = true;
         logging::info(true, "PRETENSION '", section->name,
             "': solved mean gap = ", section->last_solved_gap);

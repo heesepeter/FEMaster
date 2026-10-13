@@ -296,6 +296,13 @@ SystemDofIds Model::build_structural_dof_index_matrix() {
         }
     }
 
+    for (const auto& section : _data->pretension_sections) {
+        logging::error(section && section->control_node >= 0,
+            "PRETENSION SECTION: control node not prepared");
+        logging::error(!mask.row(section->control_node).any(),
+            "PRETENSION SECTION: control node must not have structural connectivity");
+        mask(section->control_node, 0) = true;
+    }
     return mattools::numerate_dofs(mask);
 }
 

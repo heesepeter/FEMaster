@@ -397,6 +397,9 @@ void Parser::process_deck(const io::dsl::Deck&                  deck,
     for (const auto* assembly : root.children("ASSEMBLY")) {
         assembly->execute_children("TRANSFORM");
     }
+    for (const auto& section : model_->_data->pretension_sections)
+        logging::error(!node_transforms.count(section->control_node),
+            "PRETENSION SECTION: local TRANSFORM at control node is unsupported");
 
     // ---------------------------------------------------------------------
     // Root-level topology-dependent constraints

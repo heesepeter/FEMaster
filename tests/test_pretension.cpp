@@ -83,7 +83,7 @@ void check_binary(const std::string& binary, const std::vector<Frame>& frames) {
             payload = std::move(decoded);
         }
         if (type == "MESH") {
-            EXPECT_EQ(binary_value<std::uint64_t>(payload, 0), 20u);
+            EXPECT_EQ(binary_value<std::uint64_t>(payload, 0), 21u);
         } else if (type == "FMET") {
             const auto length = binary_value<std::uint16_t>(payload, 16);
             metadata[binary_value<std::uint64_t>(payload, 0)] = {
@@ -162,6 +162,14 @@ protected:
             }
             EXPECT_NEAR(resultant, expected_force + (step == 2 ? section.axis_direction(2) * 4.0 / 3.0 : 0.0), 1e-3);
         }
+        const auto dofs = parser.model().build_structural_dof_index_matrix();
+        EXPECT_GE(dofs(section.control_node, 0), 0);
+        for (Dim c = 1; c < 6; ++c) EXPECT_EQ(dofs(section.control_node, c), -1);
+        for (const auto& frame : frames) {
+            EXPECT_NEAR(frame.at("DISPLACEMENT").at(section.control_node).at(0), expected_gap, 1e-8);
+            EXPECT_NEAR(frame.at("PTGAP").at(section.control_node).at(0), expected_gap, 1e-8);
+        }
+        EXPECT_NEAR(section.total_force, frames.back().at("PTFORC").at(section.control_node).at(0), 1e-3);
         EXPECT_NEAR(section.locked_gap, expected_gap, 1e-10);
         EXPECT_NE(read_file(directory / "model.frd").find("PTGAP"), std::string::npos);
     }
@@ -170,7 +178,7 @@ protected:
 TEST_F(Pretension, ForceLockExternalLoadAndBinaryOutput) {
     run(true);
     check(1000.0 * 3.0 / (210000.0 * 4.0));
-    EXPECT_EQ(parser.model()._data->positions->rows, 20u);
+    EXPECT_EQ(parser.model()._data->positions->rows, 21u);
     const auto binary = read_file(directory / "model.femr");
     check_binary(binary, read_frames(read_file(directory / "model.res")));
 }
@@ -341,8 +349,22 @@ TEST_F(Pretension, SeparateMatchingFaces) {
     replace(deck, "VALUE=1000.0", "VALUE=-1000.0");
     run();
     const auto& section = *parser.model()._data->pretension_sections.at(0);
-    EXPECT_EQ(parser.model()._data->positions->rows, 20u);
+    EXPECT_EQ(parser.model()._data->positions->rows, 21u);
     check(-1000.0 * 3.0 / (210000.0 * 4.0), -1000.0);
+}
+
+TEST_F(Pretension, ExplicitNativeControlNode) {
+    replace(deck, "*ELEMENT, TYPE=C3D8", "900001, 99, 88, 77\n*ELEMENT, TYPE=C3D8");
+    replace(deck, "NAME=PT1, SURFACE_A=CUT_FACE", "NAME=PT1, SURFACE_A=CUT_FACE, NODE=900001");
+    run();
+    check(1000.0 * 3.0 / (210000.0 * 4.0));
+    EXPECT_EQ(parser.model()._data->pretension_sections[0]->control_node,
+        parser.model().compiled_node_id("900001"));
+}
+
+TEST_F(Pretension, RejectsStructuralControlNode) {
+    replace(deck, "NAME=PT1, SURFACE_A=CUT_FACE", "NAME=PT1, SURFACE_A=CUT_FACE, NODE=5");
+    EXPECT_THROW(run(), std::exception);
 }
 
 TEST_F(Pretension, RejectsLockBeforeLoad) {
